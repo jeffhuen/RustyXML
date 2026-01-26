@@ -267,10 +267,12 @@ defmodule RustyXMLTest do
   describe "xmap/2" do
     test "extracts multiple values" do
       xml = "<root><a>1</a><b>2</b></root>"
-      result = RustyXML.xmap(xml, [
-        a: ~x"//a",
-        b: ~x"//b"
-      ])
+
+      result =
+        RustyXML.xmap(xml,
+          a: ~x"//a",
+          b: ~x"//b"
+        )
 
       assert is_map(result)
       assert Map.has_key?(result, :a)
@@ -279,10 +281,12 @@ defmodule RustyXMLTest do
 
     test "works with parsed document" do
       doc = RustyXML.parse("<root><x>foo</x><y>bar</y></root>")
-      result = RustyXML.xmap(doc, [
-        x: ~x"//x",
-        y: ~x"//y"
-      ])
+
+      result =
+        RustyXML.xmap(doc,
+          x: ~x"//x",
+          y: ~x"//y"
+        )
 
       assert is_map(result)
       assert Map.has_key?(result, :x)

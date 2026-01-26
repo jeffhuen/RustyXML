@@ -68,12 +68,13 @@ defmodule RustyXML.StreamingTest do
       all_events = events ++ final
 
       # Should only have item events (empty_element)
-      item_events = Enum.filter(all_events, fn
-        {:empty_element, name, _} -> name == "item"
-        {:start_element, name, _} -> name == "item"
-        {:end_element, name} -> name == "item"
-        _ -> false
-      end)
+      item_events =
+        Enum.filter(all_events, fn
+          {:empty_element, name, _} -> name == "item"
+          {:start_element, name, _} -> name == "item"
+          {:end_element, name} -> name == "item"
+          _ -> false
+        end)
 
       assert length(item_events) >= 2
     end
@@ -82,7 +83,8 @@ defmodule RustyXML.StreamingTest do
   describe "stream_tags/3 high-level API" do
     setup do
       # Create a temporary XML file for streaming tests
-      path = Path.join(System.tmp_dir!(), "test_stream_#{:rand.uniform(1000000)}.xml")
+      path = Path.join(System.tmp_dir!(), "test_stream_#{:rand.uniform(1_000_000)}.xml")
+
       content = """
       <?xml version="1.0"?>
       <catalog>
@@ -91,6 +93,7 @@ defmodule RustyXML.StreamingTest do
         <item id="3"><name>Third</name><price>30.00</price></item>
       </catalog>
       """
+
       File.write!(path, content)
 
       on_exit(fn -> File.rm(path) end)

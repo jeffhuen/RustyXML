@@ -155,7 +155,9 @@ defmodule RustyXML.Streaming do
 
   defp chunk_string(string, chunk_size) do
     Stream.unfold(string, fn
-      "" -> nil
+      "" ->
+        nil
+
       s ->
         {chunk, rest} = String.split_at(s, chunk_size)
         {chunk, rest}
@@ -185,7 +187,9 @@ defmodule RustyXML.Streaming do
     {:file, device, parser, chunk_size, tag_atom, nil, []}
   end
 
-  defp next_element_file({:file, device, parser, chunk_size, tag_atom, builder, complete} = _state) do
+  defp next_element_file(
+         {:file, device, parser, chunk_size, tag_atom, builder, complete} = _state
+       ) do
     # First, emit any complete elements we have
     if complete != [] do
       [first | rest] = Enum.reverse(complete)
@@ -251,7 +255,8 @@ defmodule RustyXML.Streaming do
   # ==========================================================================
 
   defp stream_enumerable_elements(enumerable, tag_str, tag_atom, opts) do
-    _ = opts  # Reserved for future use
+    # Reserved for future use
+    _ = opts
 
     Stream.resource(
       fn -> init_enum_element_stream(enumerable, tag_str, tag_atom) end,

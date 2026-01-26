@@ -261,7 +261,9 @@ defmodule RustyXML.Native do
       ids = RustyXML.Native.result_attrs(result, "id", 0, 10)  # First 10 @id values
 
   """
-  @spec result_attrs(result_ref(), binary(), non_neg_integer(), non_neg_integer()) :: [binary() | nil]
+  @spec result_attrs(result_ref(), binary(), non_neg_integer(), non_neg_integer()) :: [
+          binary() | nil
+        ]
   def result_attrs(_result, _attr_name, _start, _count), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -285,8 +287,10 @@ defmodule RustyXML.Native do
       - include_text: Whether to include text content
 
   """
-  @spec result_extract(result_ref(), non_neg_integer(), non_neg_integer(), [binary()], boolean()) :: [map()]
-  def result_extract(_result, _start, _count, _attr_names, _include_text), do: :erlang.nif_error(:nif_not_loaded)
+  @spec result_extract(result_ref(), non_neg_integer(), non_neg_integer(), [binary()], boolean()) ::
+          [map()]
+  def result_extract(_result, _start, _count, _attr_names, _include_text),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Parse XML and execute an XPath query in one call.

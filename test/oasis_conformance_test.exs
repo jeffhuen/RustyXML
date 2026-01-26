@@ -59,54 +59,54 @@ defmodule OasisConformanceTest do
 
   # Collect all test cases at compile time
   @test_cases (
-    extract_attr_fn = fn attrs, name ->
-      case Regex.run(~r/#{name}="([^"]*)"/, attrs) do
-        [_, value] -> value
-        _ -> nil
-      end
-    end
+                extract_attr_fn = fn attrs, name ->
+                  case Regex.run(~r/#{name}="([^"]*)"/, attrs) do
+                    [_, value] -> value
+                    _ -> nil
+                  end
+                end
 
-    for {catalog_file, base_path} <- @test_suites,
-        catalog_path = Path.join(@xmlconf_base, catalog_file),
-        File.exists?(catalog_path) do
-      content = File.read!(catalog_path)
+                for {catalog_file, base_path} <- @test_suites,
+                    catalog_path = Path.join(@xmlconf_base, catalog_file),
+                    File.exists?(catalog_path) do
+                  content = File.read!(catalog_path)
 
-      # Parse TEST elements - simple regex extraction
-      Regex.scan(
-        ~r/<TEST\s+([^>]+)>([^<]*)<\/TEST>/s,
-        content
-      )
-      |> Enum.map(fn [_full, attrs, description] ->
-        type = extract_attr_fn.(attrs, "TYPE")
-        entities = extract_attr_fn.(attrs, "ENTITIES")
-        id = extract_attr_fn.(attrs, "ID")
-        uri = extract_attr_fn.(attrs, "URI")
-        sections = extract_attr_fn.(attrs, "SECTIONS")
+                  # Parse TEST elements - simple regex extraction
+                  Regex.scan(
+                    ~r/<TEST\s+([^>]+)>([^<]*)<\/TEST>/s,
+                    content
+                  )
+                  |> Enum.map(fn [_full, attrs, description] ->
+                    type = extract_attr_fn.(attrs, "TYPE")
+                    entities = extract_attr_fn.(attrs, "ENTITIES")
+                    id = extract_attr_fn.(attrs, "ID")
+                    uri = extract_attr_fn.(attrs, "URI")
+                    sections = extract_attr_fn.(attrs, "SECTIONS")
 
-        full_path =
-          if uri, do: Path.join([@xmlconf_base, base_path, uri]), else: nil
+                    full_path =
+                      if uri, do: Path.join([@xmlconf_base, base_path, uri]), else: nil
 
-        %{
-          id: id,
-          type: type,
-          entities: entities,
-          uri: uri,
-          sections: sections,
-          description: String.trim(description),
-          base_path: base_path,
-          full_path: full_path
-        }
-      end)
-      |> Enum.filter(fn test ->
-        # Only run tests with no entity requirements and valid paths
-        test.entities == "none" and
-          test.type in ["valid", "not-wf"] and
-          test.uri != nil and
-          test.id != nil
-      end)
-    end
-    |> List.flatten()
-  )
+                    %{
+                      id: id,
+                      type: type,
+                      entities: entities,
+                      uri: uri,
+                      sections: sections,
+                      description: String.trim(description),
+                      base_path: base_path,
+                      full_path: full_path
+                    }
+                  end)
+                  |> Enum.filter(fn test ->
+                    # Only run tests with no entity requirements and valid paths
+                    test.entities == "none" and
+                      test.type in ["valid", "not-wf"] and
+                      test.uri != nil and
+                      test.id != nil
+                  end)
+                end
+                |> List.flatten()
+              )
 
   # Generate test cases
   describe "Valid (must accept)" do

@@ -147,6 +147,7 @@ defmodule RustyXML.ConformanceTest do
         <child2/>
       </root>
       """
+
       doc = RustyXML.parse(xml)
       result = RustyXML.xpath(doc, "count(/root/*)")
       assert result == 2.0
@@ -238,13 +239,15 @@ defmodule RustyXML.ConformanceTest do
 
   describe "Numeric character references (XML 1.0 §4.1)" do
     test "decimal character reference - ASCII" do
-      xml = "<root>&#65;&#66;&#67;</root>"  # ABC
+      # ABC
+      xml = "<root>&#65;&#66;&#67;</root>"
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
 
     test "hexadecimal character reference - lowercase x" do
-      xml = "<root>&#x41;&#x42;&#x43;</root>"  # ABC
+      # ABC
+      xml = "<root>&#x41;&#x42;&#x43;</root>"
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -253,6 +256,7 @@ defmodule RustyXML.ConformanceTest do
       # Per XML 1.0 spec, CharRef uses lowercase 'x' only: '&#x' [0-9a-fA-F]+ ';'
       # Uppercase 'X' is not allowed (OASIS test sa-093 is not-wf for this)
       xml = "<root>&#X41;&#X42;&#X43;</root>"
+
       assert_raise RustyXML.ParseError, fn ->
         RustyXML.parse(xml)
       end
@@ -260,7 +264,8 @@ defmodule RustyXML.ConformanceTest do
 
     test "hexadecimal character reference - uppercase X accepted in lenient mode" do
       # Lenient mode accepts uppercase X for compatibility
-      xml = "<root>&#X41;&#X42;&#X43;</root>"  # ABC
+      # ABC
+      xml = "<root>&#X41;&#X42;&#X43;</root>"
       doc = RustyXML.parse(xml, lenient: true)
       assert is_reference(doc)
     end
@@ -287,7 +292,8 @@ defmodule RustyXML.ConformanceTest do
     end
 
     test "mixed decimal and hex references" do
-      xml = "<root>&#65;&#x42;&#67;&#x44;</root>"  # ABCD
+      # ABCD
+      xml = "<root>&#65;&#x42;&#67;&#x44;</root>"
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -338,6 +344,7 @@ defmodule RustyXML.ConformanceTest do
         }
       ]]></script>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -403,6 +410,7 @@ defmodule RustyXML.ConformanceTest do
         multiline comment
       --></root>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -458,7 +466,9 @@ defmodule RustyXML.ConformanceTest do
     end
 
     test "multiple namespace declarations" do
-      xml = ~s(<root xmlns="http://default.com" xmlns:ns1="http://ns1.com" xmlns:ns2="http://ns2.com"/>)
+      xml =
+        ~s(<root xmlns="http://default.com" xmlns:ns1="http://ns1.com" xmlns:ns2="http://ns2.com"/>)
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -469,6 +479,7 @@ defmodule RustyXML.ConformanceTest do
         <child xmlns="http://child.com"/>
       </root>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -492,6 +503,7 @@ defmodule RustyXML.ConformanceTest do
         <child xmlns=""/>
       </root>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -707,7 +719,9 @@ defmodule RustyXML.ConformanceTest do
     end
 
     test "DOCTYPE with PUBLIC identifier" do
-      xml = ~s(<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html/>)
+      xml =
+        ~s(<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html/>)
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -835,6 +849,7 @@ defmodule RustyXML.ConformanceTest do
         </channel>
       </rss>
       """
+
       doc = RustyXML.parse(xml)
       result = RustyXML.xpath(doc, "count(//item)")
       assert result == 2.0
@@ -851,6 +866,7 @@ defmodule RustyXML.ConformanceTest do
         </soap:Body>
       </soap:Envelope>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -862,6 +878,7 @@ defmodule RustyXML.ConformanceTest do
         <rect x="10" y="10" width="30" height="30" fill="blue"/>
       </svg>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -876,6 +893,7 @@ defmodule RustyXML.ConformanceTest do
         </entry>
       </feed>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end
@@ -891,6 +909,7 @@ defmodule RustyXML.ConformanceTest do
         </dict>
       </plist>
       """
+
       doc = RustyXML.parse(xml)
       assert is_reference(doc)
     end

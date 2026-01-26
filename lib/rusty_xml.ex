@@ -269,7 +269,8 @@ defmodule RustyXML do
       Native.xpath_with_subspecs(xml, parent_path, nif_subspecs)
       |> maybe_apply_list_modifier(spec)
     else
-      xml  # Return the result from fallback
+      # Return the result from fallback
+      xml
     end
   end
 
@@ -303,7 +304,8 @@ defmodule RustyXML do
   @spec xmap(binary() | document(), keyword(), keyword()) :: map()
   def xmap(xml_or_doc, specs, opts \\ []) when is_list(specs) do
     doc = if is_binary(xml_or_doc), do: parse(xml_or_doc), else: xml_or_doc
-    _ = opts  # Reserved for future options
+    # Reserved for future options
+    _ = opts
 
     specs
     |> Enum.map(fn {key, spec} ->
@@ -317,7 +319,8 @@ defmodule RustyXML do
     xpath(doc, spec)
   end
 
-  defp evaluate_spec(_doc, xml, [%SweetXpath{} = parent_spec | child_specs]) when is_list(child_specs) do
+  defp evaluate_spec(_doc, xml, [%SweetXpath{} = parent_spec | child_specs])
+       when is_list(child_specs) do
     # Nested spec: first element is parent path, rest are child specs
     # Get parent nodes as raw elements (bypass value extraction)
     parent_result = Native.parse_and_xpath(xml, parent_spec.path)
@@ -349,7 +352,8 @@ defmodule RustyXML do
     child_specs
     |> Enum.filter(fn
       {_key, %SweetXpath{}} -> true
-      {_key, [%SweetXpath{} | _]} -> true  # Nested specs
+      # Nested specs
+      {_key, [%SweetXpath{} | _]} -> true
       _ -> false
     end)
     |> Enum.map(fn {key, spec} ->
@@ -408,10 +412,11 @@ defmodule RustyXML do
 
   # Convert to keyword list if any spec has is_keyword set
   defp maybe_to_keyword(result, specs) do
-    has_keyword = Enum.any?(specs, fn
-      {_, %SweetXpath{is_keyword: true}} -> true
-      _ -> false
-    end)
+    has_keyword =
+      Enum.any?(specs, fn
+        {_, %SweetXpath{is_keyword: true}} -> true
+        _ -> false
+      end)
 
     if has_keyword do
       Keyword.new(result)
@@ -460,7 +465,8 @@ defmodule RustyXML do
 
   """
   @spec add_namespace(SweetXpath.t(), binary(), binary()) :: SweetXpath.t()
-  def add_namespace(%SweetXpath{} = spec, prefix, uri) when is_binary(prefix) and is_binary(uri) do
+  def add_namespace(%SweetXpath{} = spec, prefix, uri)
+      when is_binary(prefix) and is_binary(uri) do
     %{spec | namespaces: [{prefix, uri} | spec.namespaces]}
   end
 
@@ -702,38 +708,53 @@ defmodule RustyXML do
 
   # Soft cast returns nil on failure/empty, hard cast raises
   defp cast_to_string(nil, _soft), do: nil
-  defp cast_to_string("", true), do: nil  # Soft cast: empty string -> nil
+  # Soft cast: empty string -> nil
+  defp cast_to_string("", true), do: nil
   defp cast_to_string(val, _soft) when is_binary(val), do: val
   defp cast_to_string(val, _soft) when is_number(val), do: to_string(val)
   defp cast_to_string(val, _soft), do: to_string(val)
 
   defp cast_to_integer(nil, _soft), do: nil
-  defp cast_to_integer("", true), do: nil  # Soft cast: empty string -> nil
-  defp cast_to_integer("", false), do: raise(ArgumentError, "cannot parse as integer: empty string")
+  # Soft cast: empty string -> nil
+  defp cast_to_integer("", true), do: nil
+
+  defp cast_to_integer("", false),
+    do: raise(ArgumentError, "cannot parse as integer: empty string")
+
   defp cast_to_integer(val, soft) when is_binary(val) do
     case Integer.parse(String.trim(val)) do
       {int, _} -> int
       :error -> if soft, do: nil, else: raise(ArgumentError, "cannot parse as integer: #{val}")
     end
   end
+
   defp cast_to_integer(val, _soft) when is_integer(val), do: val
   defp cast_to_integer(val, _soft) when is_float(val), do: trunc(val)
-  defp cast_to_integer(_val, true), do: nil  # Soft cast: unparseable -> nil
-  defp cast_to_integer(val, false), do: raise(ArgumentError, "cannot cast to integer: #{inspect(val)}")
+  # Soft cast: unparseable -> nil
+  defp cast_to_integer(_val, true), do: nil
+
+  defp cast_to_integer(val, false),
+    do: raise(ArgumentError, "cannot cast to integer: #{inspect(val)}")
 
   defp cast_to_float(nil, _soft), do: nil
-  defp cast_to_float("", true), do: nil  # Soft cast: empty string -> nil
+  # Soft cast: empty string -> nil
+  defp cast_to_float("", true), do: nil
   defp cast_to_float("", false), do: raise(ArgumentError, "cannot parse as float: empty string")
+
   defp cast_to_float(val, soft) when is_binary(val) do
     case Float.parse(String.trim(val)) do
       {float, _} -> float
       :error -> if soft, do: nil, else: raise(ArgumentError, "cannot parse as float: #{val}")
     end
   end
+
   defp cast_to_float(val, _soft) when is_float(val), do: val
   defp cast_to_float(val, _soft) when is_integer(val), do: val / 1
-  defp cast_to_float(_val, true), do: nil  # Soft cast: unparseable -> nil
-  defp cast_to_float(val, false), do: raise(ArgumentError, "cannot cast to float: #{inspect(val)}")
+  # Soft cast: unparseable -> nil
+  defp cast_to_float(_val, true), do: nil
+
+  defp cast_to_float(val, false),
+    do: raise(ArgumentError, "cannot cast to float: #{inspect(val)}")
 
   # Handle optional
   defp maybe_apply_optional(nil, %{is_optional: true}), do: nil
