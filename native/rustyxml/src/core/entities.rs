@@ -52,22 +52,65 @@ fn decode_entities_strict(input: &[u8]) -> Result<Vec<u8>, &'static str> {
             result.extend_from_slice(&input[pos..pos + amp_pos]);
             pos += amp_pos;
 
-            // Find the semicolon
-            if let Some(semi_offset) = memchr(b';', &input[pos..]) {
-                let entity = &input[pos + 1..pos + semi_offset];
+            // Find the semicolon - but first check for entity boundaries
+            // Entity reference must be followed by valid name chars then semicolon
+            let after_amp = &input[pos + 1..];
 
-                if let Some(decoded) = decode_entity_strict(entity)? {
-                    result.extend_from_slice(decoded.as_bytes());
-                    pos += semi_offset + 1;
+            // Check if this looks like an entity reference
+            if !after_amp.is_empty() {
+                let first = after_amp[0];
+                if first == b'#' || first.is_ascii_alphabetic() || first == b'_' || first == b':' {
+                    // Looks like an entity reference, require semicolon
+                    // Find the end of the potential entity name
+                    let mut name_end = 0;
+                    if first == b'#' {
+                        name_end = 1;
+                        while name_end < after_amp.len() {
+                            let c = after_amp[name_end];
+                            if c == b';' {
+                                break;
+                            }
+                            if !c.is_ascii_alphanumeric() && c != b'x' {
+                                // Not a valid character reference
+                                return Err("Malformed entity reference (missing semicolon)");
+                            }
+                            name_end += 1;
+                        }
+                    } else {
+                        // Named entity
+                        while name_end < after_amp.len() {
+                            let c = after_amp[name_end];
+                            if c == b';' {
+                                break;
+                            }
+                            if !c.is_ascii_alphanumeric() && c != b'_' && c != b'-' && c != b'.' && c != b':' {
+                                // Invalid character before semicolon
+                                return Err("Malformed entity reference (missing semicolon)");
+                            }
+                            name_end += 1;
+                        }
+                    }
+
+                    if name_end >= after_amp.len() || after_amp[name_end] != b';' {
+                        return Err("Malformed entity reference (missing semicolon)");
+                    }
+
+                    let entity = &after_amp[..name_end];
+                    if let Some(decoded) = decode_entity_strict(entity)? {
+                        result.extend_from_slice(decoded.as_bytes());
+                        pos += 1 + name_end + 1; // &, entity, ;
+                    } else {
+                        // Unknown entity, keep as-is (for user-defined entities)
+                        result.extend_from_slice(&input[pos..pos + 1 + name_end + 1]);
+                        pos += 1 + name_end + 1;
+                    }
                 } else {
-                    // Unknown entity, keep as-is (for user-defined entities)
-                    result.push(b'&');
-                    pos += 1;
+                    // Not followed by valid entity start char
+                    return Err("'&' must be escaped as '&amp;' or start an entity reference");
                 }
             } else {
-                // No semicolon found, keep the ampersand
-                result.push(b'&');
-                pos += 1;
+                // & at end of input
+                return Err("'&' at end of content must be escaped as '&amp;'");
             }
         } else {
             // No more entities, copy the rest
@@ -187,8 +230,16 @@ fn decode_numeric_entity_impl(entity: &[u8], strict: bool) -> Option<String> {
         return None;
     }
 
-    let codepoint = if entity[0] == b'x' || entity[0] == b'X' {
-        // Hexadecimal: &#xHHHH;
+    let codepoint = if entity[0] == b'x' {
+        // Hexadecimal: &#xHHHH; (lowercase x only per XML 1.0)
+        let hex = std::str::from_utf8(&entity[1..]).ok()?;
+        u32::from_str_radix(hex, 16).ok()?
+    } else if entity[0] == b'X' {
+        // Uppercase X is not allowed in XML 1.0
+        if strict {
+            return None;
+        }
+        // Lenient mode: accept uppercase X
         let hex = std::str::from_utf8(&entity[1..]).ok()?;
         u32::from_str_radix(hex, 16).ok()?
     } else {

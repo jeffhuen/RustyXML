@@ -236,9 +236,18 @@ RustyXML is tested against the official W3C XML Conformance Test Suite (xmlconf)
 
 | Category | Tests | Passed | Status |
 |----------|-------|--------|--------|
-| Valid documents (must accept) | 218 | 214 | ✅ **98.2%** |
-| Not-well-formed (must reject) | 871 | 20 | ⚠️ **Partial** |
+| Valid documents (must accept) | 218 | 218 | ✅ **100%** |
+| Not-well-formed (must reject) | 871 | 844 | ✅ **96.9%** |
 | Invalid (DTD validation) | - | - | N/A (non-validating) |
+
+**Note:** The 27 remaining not-well-formed tests all require entity tracking infrastructure:
+
+- **Undefined entity detection** (sa-072 to sa-078, sa-083): Requires tracking declared entities to detect undefined references
+- **Entity case sensitivity** (P68n04-n08): Entity names are case-sensitive, requires tracking declared names
+- **External entity in attributes** (P41n10-n14): WFC "No External Entity References" requires tracking which entities are external
+- **Entity replacement validation** (sa-090, sa-092, sa-103, sa-115-119, sa-140-141, sa-153, P60n07): Requires entity expansion to validate replacement text content
+
+These validations are beyond the scope of a non-validating tokenizer.
 
 ### Parser Behavior
 
@@ -463,6 +472,22 @@ Future strict mode enhancements could include:
 - Mismatched tag detection
 - Unclosed element detection
 - Duplicate attribute detection
+
+### Entity Tracking (Future Enhancement)
+
+To achieve 100% not-well-formed test compliance, the following entity tracking would be needed:
+
+1. **Entity Registry** - Track declared entities, their types (internal/external), and values
+2. **Undefined Entity Detection** - Reject entity references to undeclared entities
+3. **Case-Sensitive Matching** - Entity names are case-sensitive (`&foo;` ≠ `&Foo;`)
+4. **External Entity Detection** - Track entities declared with SYSTEM/PUBLIC
+5. **Attribute Entity Restrictions** - Reject external entity references in attribute values
+6. **Entity Expansion Validation** - Expand entities and validate replacement text for:
+   - Valid element names (no combining marks as first char)
+   - Balanced tags (opened elements must be closed)
+   - Valid attribute values (no bare `<` characters)
+
+This would add ~1000 lines of code and require changes to the tokenizer architecture.
 
 ### Not Planned
 

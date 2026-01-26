@@ -61,6 +61,10 @@ impl<'a> SliceReader<'a> {
 
                 TokenKind::StartTag => {
                     let attrs = self.parse_tag_attributes(&token);
+                    // Check for attribute parsing error in strict mode
+                    if self.strict && self.attr_error.is_some() {
+                        return None;
+                    }
                     let name = token.name?;
                     return Some(XmlEvent::StartElement(StartElement::from_cow(name, attrs)));
                 }
@@ -72,6 +76,10 @@ impl<'a> SliceReader<'a> {
 
                 TokenKind::EmptyTag => {
                     let attrs = self.parse_tag_attributes(&token);
+                    // Check for attribute parsing error in strict mode
+                    if self.strict && self.attr_error.is_some() {
+                        return None;
+                    }
                     let name = token.name?;
                     return Some(XmlEvent::EmptyElement(StartElement::from_cow(name, attrs)));
                 }

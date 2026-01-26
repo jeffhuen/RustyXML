@@ -10,6 +10,7 @@ use super::node::{XmlNode, XmlAttribute, NodeId, NodeKind};
 use super::strings::StringPool;
 use crate::reader::slice::SliceReader;
 use crate::reader::events::XmlEvent;
+use std::borrow::Cow;
 
 /// An XML document stored in arena format
 pub struct XmlDocument<'a> {
@@ -315,8 +316,29 @@ impl<'a> XmlDocument<'a> {
         let mut seen_xml_decl = false;
         let mut seen_doctype = false;
         let mut seen_root_element = false;
+        let mut seen_anything = false; // Track if we've seen comment/PI before XML decl
+        let mut first_event = true;
 
         while let Some(event) = reader.next_event() {
+            // Check ordering: XML decl must be first if present
+            if strict && first_event {
+                first_event = false;
+                match &event {
+                    XmlEvent::XmlDeclaration { .. } => {
+                        // Good - XML decl is first
+                    }
+                    XmlEvent::Comment(_) | XmlEvent::ProcessingInstruction { .. } => {
+                        // Track that we saw something before potential XML decl
+                        seen_anything = true;
+                    }
+                    _ => {}
+                }
+            } else if strict && !seen_xml_decl && seen_anything {
+                if let XmlEvent::XmlDeclaration { .. } = &event {
+                    return Err("XML declaration must be at the very beginning of the document".to_string());
+                }
+            }
+
             match event {
                 XmlEvent::StartElement(elem) => {
                     // Strict mode: check document structure
@@ -388,14 +410,25 @@ impl<'a> XmlDocument<'a> {
                 }
 
                 XmlEvent::Text(content) => {
-                    // In strict mode, reject CDATA-like content outside elements
+                    // In strict mode, reject non-whitespace content outside elements
                     if strict && stack.len() == 1 {
+                        // Check if text contained entity references (Cow::Owned means entities were decoded)
+                        // Entity references are not allowed at document level, even if they decode to whitespace
+                        if matches!(&content, Cow::Owned(_)) {
+                            return Err("Entity/character references not allowed at document level".to_string());
+                        }
+
                         // Check if text is non-whitespace at document level
                         let is_whitespace = content.as_ref().iter().all(|&b| {
                             b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
                         });
                         if !is_whitespace {
-                            return Err("Text content not allowed at document level".to_string());
+                            // Check if we're before or after root element
+                            if seen_root_element {
+                                return Err("Content not allowed after root element".to_string());
+                            } else {
+                                return Err("Text content not allowed before root element".to_string());
+                            }
                         }
                     }
 
@@ -504,6 +537,11 @@ impl<'a> XmlDocument<'a> {
             if !tag_stack.is_empty() {
                 let unclosed = String::from_utf8_lossy(&tag_stack[0]);
                 return Err(format!("Unclosed tag: <{}>", unclosed));
+            }
+
+            // Check for missing root element
+            if root_element_count == 0 {
+                return Err("Document has no root element".to_string());
             }
 
             // Post-parse DTD validation

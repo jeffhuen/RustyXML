@@ -131,7 +131,6 @@ defmodule OasisConformanceTest do
     for test <- @not_wf_tests do
       @tag :oasis
       @tag :not_wf
-      @tag :skip  # Skip by default - lenient parser accepts these
       @tag sections: test.sections
       test "#{test.id}" do
         test_case = unquote(Macro.escape(test))
@@ -202,7 +201,7 @@ defmodule OasisConformanceTest do
       _root = RustyXML.root(doc)
       {:ok, doc}
     rescue
-      e in [ArgumentError, ErlangError] ->
+      e in [RustyXML.ParseError, ArgumentError, ErlangError] ->
         {:error, e}
     catch
       :error, reason ->

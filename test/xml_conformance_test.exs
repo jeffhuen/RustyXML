@@ -249,9 +249,19 @@ defmodule RustyXML.ConformanceTest do
       assert is_reference(doc)
     end
 
-    test "hexadecimal character reference - uppercase X" do
+    test "hexadecimal character reference - uppercase X rejected in strict mode" do
+      # Per XML 1.0 spec, CharRef uses lowercase 'x' only: '&#x' [0-9a-fA-F]+ ';'
+      # Uppercase 'X' is not allowed (OASIS test sa-093 is not-wf for this)
+      xml = "<root>&#X41;&#X42;&#X43;</root>"
+      assert_raise RustyXML.ParseError, fn ->
+        RustyXML.parse(xml)
+      end
+    end
+
+    test "hexadecimal character reference - uppercase X accepted in lenient mode" do
+      # Lenient mode accepts uppercase X for compatibility
       xml = "<root>&#X41;&#X42;&#X43;</root>"  # ABC
-      doc = RustyXML.parse(xml)
+      doc = RustyXML.parse(xml, lenient: true)
       assert is_reference(doc)
     end
 

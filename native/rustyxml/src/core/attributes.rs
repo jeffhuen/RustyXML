@@ -153,6 +153,10 @@ fn parse_attributes_with_validation(input: &[u8], strict: bool) -> (Vec<Attribut
         }
 
         if pos >= input.len() {
+            // End of input after '=' without value
+            if strict {
+                return (attrs, Some("Attribute value required after '='"));
+            }
             break;
         }
 
@@ -229,6 +233,15 @@ fn parse_attributes_with_validation(input: &[u8], strict: bool) -> (Vec<Attribut
 
         if pos < input.len() {
             pos += 1; // Skip closing quote
+
+            // Strict mode: ensure whitespace or end before next attribute
+            if strict && pos < input.len() {
+                let next = input[pos];
+                // If next character is a name start char, we need whitespace before it
+                if is_name_start_char(next) {
+                    return (attrs, Some("Whitespace required between attributes"));
+                }
+            }
         }
     }
 
