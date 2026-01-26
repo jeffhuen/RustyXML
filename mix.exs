@@ -30,8 +30,9 @@ defmodule RustyXML.MixProject do
 
   defp description do
     """
-    Ultra-fast XML parsing for Elixir. A purpose-built Rust NIF with SIMD acceleration,
-    arena-based DOM, and full XPath 1.0 support. Drop-in replacement for SweetXml.
+    Ultra-fast, W3C-compliant XML parser and XPath 1.0 engine for Elixir. Rust NIF
+    implementation 6-40x faster than xmerl/SweetXml with 99% less memory.
+    Drop-in SweetXml replacement with ~x sigil and streaming support.
     """
   end
 
