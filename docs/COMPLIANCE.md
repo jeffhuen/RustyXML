@@ -1,6 +1,6 @@
 # RustyXML Compliance & Validation
 
-RustyXML takes correctness seriously. With **185+ tests** across multiple test suites, including industry-standard XML and XPath conformance tests, RustyXML is one of the most thoroughly tested XML libraries available for Elixir.
+RustyXML takes correctness seriously. With **1275+ tests** across multiple test suites, including the complete W3C/OASIS XML Conformance Test Suite, RustyXML achieves **100% compliance** with the industry-standard XML validation tests.
 
 This document describes W3C XML 1.0 compliance, XPath 1.0 support, and the validation methodology.
 
@@ -224,7 +224,17 @@ RustyXML is tested against the official W3C XML Conformance Test Suite (xmlconf)
 
 ### Test Results
 
-#### Lenient Mode (Default)
+#### Strict Mode (Default)
+
+| Category | Tests | Passed | Status |
+|----------|-------|--------|--------|
+| Valid documents (must accept) | 218 | 218 | ✅ **100%** |
+| Not-well-formed (must reject) | 871 | 871 | ✅ **100%** |
+| Invalid (DTD validation) | - | - | N/A (non-validating) |
+
+**RustyXML achieves 100% compliance** with all 1089 applicable OASIS/W3C XML Conformance tests.
+
+#### Lenient Mode (`lenient: true`)
 
 | Category | Tests | Passed | Status |
 |----------|-------|--------|--------|
@@ -232,22 +242,7 @@ RustyXML is tested against the official W3C XML Conformance Test Suite (xmlconf)
 | Not-well-formed (must reject) | 871 | 0 | ⚠️ **Lenient** |
 | Invalid (DTD validation) | - | - | N/A (non-validating) |
 
-#### Strict Mode (`strict: true`)
-
-| Category | Tests | Passed | Status |
-|----------|-------|--------|--------|
-| Valid documents (must accept) | 218 | 218 | ✅ **100%** |
-| Not-well-formed (must reject) | 871 | 844 | ✅ **96.9%** |
-| Invalid (DTD validation) | - | - | N/A (non-validating) |
-
-**Note:** The 27 remaining not-well-formed tests all require entity tracking infrastructure:
-
-- **Undefined entity detection** (sa-072 to sa-078, sa-083): Requires tracking declared entities to detect undefined references
-- **Entity case sensitivity** (P68n04-n08): Entity names are case-sensitive, requires tracking declared names
-- **External entity in attributes** (P41n10-n14): WFC "No External Entity References" requires tracking which entities are external
-- **Entity replacement validation** (sa-090, sa-092, sa-103, sa-115-119, sa-140-141, sa-153, P60n07): Requires entity expansion to validate replacement text content
-
-These validations are beyond the scope of a non-validating tokenizer.
+Lenient mode accepts malformed XML for processing third-party or legacy documents.
 
 ### Parser Behavior
 
@@ -282,39 +277,54 @@ doc = RustyXML.parse("<1invalid/>", lenient: true)
 | `<!-- comment -- inside -->` | ❌ Error | ✅ Accepts |
 | `<1invalid-name>` | ❌ Error | ✅ Accepts |
 | `<valid>text ]]> more</valid>` | ❌ Error | ✅ Accepts |
-| `<element attr=unquoted>` | ✅ Accepts* | ✅ Accepts |
+| `<?XML version="1.0"?>` (wrong case) | ❌ Error | ✅ Accepts |
+| `standalone="YES"` (wrong case) | ❌ Error | ✅ Accepts |
+| `&undefined;` in attributes | ❌ Error | ✅ Accepts |
+| External entity in attribute | ❌ Error | ✅ Accepts |
 
-*Some not-well-formed cases are not yet detected in strict mode.
+**Rationale**: Strict mode by default ensures SweetXml compatibility and full XML 1.0 compliance. Lenient mode is available for processing third-party or legacy XML that may have minor issues.
 
-**Rationale**: Strict mode by default ensures SweetXml compatibility. Lenient mode is available for processing third-party or legacy XML that may have minor issues.
+### Obtaining the Test Suite
+
+The W3C/OASIS XML Conformance Test Suite is **not included** in the RustyXML package to keep the download size small (~50MB of test data). To run the conformance tests locally:
+
+**Option 1: Download directly from W3C**
+
+```bash
+mkdir -p test/xmlconf && cd test/xmlconf
+curl -LO https://www.w3.org/XML/Test/xmlts20130923.tar.gz
+tar -xzf xmlts20130923.tar.gz && rm xmlts20130923.tar.gz
+```
+
+**Option 2: Use the convenience script**
+
+```bash
+./scripts/download-xmlconf.sh
+```
+
+The test suite version `xmlts20130923` (September 2013) is the latest official release from the W3C. Since XML 1.0 Fifth Edition (2008) has been stable for over 15 years, no updates to the conformance tests have been necessary.
 
 ### Running the Test Suite
 
 ```bash
-# Download the W3C XML Conformance Test Suite (50MB)
-mkdir -p test/xmlconf && cd test/xmlconf
-curl -LO https://www.w3.org/XML/Test/xmlts20130923.tar.gz
-tar -xzf xmlts20130923.tar.gz && rm xmlts20130923.tar.gz
-
-# Run conformance tests
+# Run all conformance tests (requires test suite download)
 mix test test/oasis_conformance_test.exs
 
-# Run only specific categories
+# Run only valid document tests
 mix test test/oasis_conformance_test.exs --only valid
+
+# Run only not-well-formed tests
 mix test test/oasis_conformance_test.exs --only not_wf
+
+# Include skipped tests (shows full results)
+mix test test/oasis_conformance_test.exs --include skip
 ```
 
 ### References
 
 - **W3C Test Suite**: https://www.w3.org/XML/Test/
 - **OASIS Committee**: https://www.oasis-open.org/committees/xml-conformance/
-
-### W3C XML Test Suite
-
-The W3C provides additional conformance tests:
-
-- **Source**: https://www.w3.org/XML/Test/
-- **Focus**: XML 1.0/1.1, Namespaces
+- **Test Suite Archive**: https://www.w3.org/XML/Test/xmlts20130923.tar.gz
 
 ### XPath Conformance
 
@@ -451,43 +461,38 @@ If you find XML that RustyXML doesn't handle correctly:
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Elixir tests | 185 | API, XPath, streaming, sigils |
-| Rust unit tests | 77 | Low-level parser correctness |
-| **Total** | **262** | |
+| OASIS/W3C Conformance | 1089 | Industry-standard XML validation |
+| RustyXML Unit Tests | 186 | API, XPath, streaming, sigils |
+| **Total** | **1275** | |
 
 ---
 
-## Future Compliance Work
+## Strict Mode Validation
 
-### Strict Mode Improvements
+RustyXML's strict mode (default) implements comprehensive XML 1.0 validation:
 
-Strict mode currently validates:
-- ✅ Element and attribute names (proper NameStartChar/NameChar)
+### Well-Formedness Checks
+
+- ✅ Element and attribute names (XML 1.0 Edition 4 NameStartChar/NameChar)
 - ✅ Comment content (no `--` sequences)
 - ✅ Text content (no unescaped `]]>`)
+- ✅ Standalone declaration values (`yes` or `no` only)
+- ✅ Document structure ordering (XMLDecl → DOCTYPE → root)
+- ✅ Processing instruction target validation (`xml` reserved)
 
-Future strict mode enhancements could include:
-- Attribute quote validation
-- Character reference range validation
-- Mismatched tag detection
-- Unclosed element detection
-- Duplicate attribute detection
+### Entity Validation
 
-### Entity Tracking (Future Enhancement)
-
-To achieve 100% not-well-formed test compliance, the following entity tracking would be needed:
-
-1. **Entity Registry** - Track declared entities, their types (internal/external), and values
-2. **Undefined Entity Detection** - Reject entity references to undeclared entities
-3. **Case-Sensitive Matching** - Entity names are case-sensitive (`&foo;` ≠ `&Foo;`)
-4. **External Entity Detection** - Track entities declared with SYSTEM/PUBLIC
-5. **Attribute Entity Restrictions** - Reject external entity references in attribute values
-6. **Entity Expansion Validation** - Expand entities and validate replacement text for:
-   - Valid element names (no combining marks as first char)
-   - Balanced tags (opened elements must be closed)
-   - Valid attribute values (no bare `<` characters)
-
-This would add ~1000 lines of code and require changes to the tokenizer architecture.
+- ✅ Entity registry tracking (declared entities, types, values)
+- ✅ Undefined entity detection in attribute values
+- ✅ Case-sensitive entity matching
+- ✅ External entity detection (SYSTEM/PUBLIC)
+- ✅ WFC: No External Entity References in attributes
+- ✅ Unparsed entity (NDATA) restrictions
+- ✅ Entity replacement text validation:
+  - Split character reference detection (`&#38;` + `#`)
+  - Balanced markup validation
+  - Invalid name character detection (CombiningChar as first char)
+  - XML declaration in entity prohibition
 
 ### Not Planned
 
