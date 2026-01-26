@@ -32,8 +32,12 @@ pub enum Op {
     Parent,
     /// Navigate along axis with node test
     Navigate(Axis, CompiledNodeTest),
-    /// Apply predicate filter
+    /// Apply predicate filter (general case)
     Predicate(Box<CompiledExpr>),
+    /// Fast path: predicate [@attr = 'value']
+    PredicateAttrEq(String, String),
+    /// Fast path: predicate [position]
+    PredicatePosition(usize),
     /// Union two node sets
     Union,
     /// Push literal number
@@ -144,8 +148,65 @@ impl CompiledExpr {
         ops.push(Op::Navigate(step.axis, node_test));
 
         for pred in &step.predicates {
-            let pred_compiled = CompiledExpr::compile(pred);
-            ops.push(Op::Predicate(Box::new(pred_compiled)));
+            // Try to use fast-path predicates for common patterns
+            if let Some(op) = Self::try_optimize_predicate(pred) {
+                ops.push(op);
+            } else {
+                let pred_compiled = CompiledExpr::compile(pred);
+                ops.push(Op::Predicate(Box::new(pred_compiled)));
+            }
+        }
+    }
+
+    /// Try to optimize a predicate into a fast-path operation
+    fn try_optimize_predicate(pred: &Expr) -> Option<Op> {
+        match pred {
+            // Pattern: [n] where n is a number - position predicate
+            Expr::Number(n) if *n > 0.0 && n.fract() == 0.0 => {
+                Some(Op::PredicatePosition(*n as usize))
+            }
+
+            // Pattern: [@attr = 'value'] - attribute equality
+            Expr::Binary(left, BinaryOp::Eq, right) => {
+                // Check if left is @attr and right is string literal
+                if let (Some(attr_name), Some(value)) = (
+                    Self::extract_attribute_name(left),
+                    Self::extract_string_literal(right),
+                ) {
+                    return Some(Op::PredicateAttrEq(attr_name, value));
+                }
+                // Check reverse: 'value' = @attr
+                if let (Some(value), Some(attr_name)) = (
+                    Self::extract_string_literal(left),
+                    Self::extract_attribute_name(right),
+                ) {
+                    return Some(Op::PredicateAttrEq(attr_name, value));
+                }
+                None
+            }
+
+            _ => None,
+        }
+    }
+
+    /// Extract attribute name from @attr pattern
+    fn extract_attribute_name(expr: &Expr) -> Option<String> {
+        if let Expr::Step(step) = expr {
+            if step.axis == Axis::Attribute && step.predicates.is_empty() {
+                if let NodeTest::Name(name) = &step.node_test {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract string literal from expression
+    fn extract_string_literal(expr: &Expr) -> Option<String> {
+        if let Expr::String(s) = expr {
+            Some(s.clone())
+        } else {
+            None
         }
     }
 }

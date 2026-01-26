@@ -180,6 +180,38 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                 }
             }
 
+            // Fast path: [@attr = 'value'] - direct attribute lookup
+            Op::PredicateAttrEq(attr_name, value) => {
+                let current = stack.pop().unwrap_or(XPathValue::empty_nodeset());
+                if let XPathValue::NodeSet(nodes) = current {
+                    let mut filtered = Vec::with_capacity(nodes.len() / 10); // Assume sparse matches
+                    for &node in &nodes {
+                        if let Some(attr_value) = ctx.doc.get_attribute(node, attr_name) {
+                            if attr_value == value {
+                                filtered.push(node);
+                            }
+                        }
+                    }
+                    stack.push(XPathValue::NodeSet(filtered));
+                } else {
+                    stack.push(XPathValue::empty_nodeset());
+                }
+            }
+
+            // Fast path: [n] - position predicate
+            Op::PredicatePosition(pos) => {
+                let current = stack.pop().unwrap_or(XPathValue::empty_nodeset());
+                if let XPathValue::NodeSet(nodes) = current {
+                    if *pos > 0 && *pos <= nodes.len() {
+                        stack.push(XPathValue::NodeSet(vec![nodes[*pos - 1]]));
+                    } else {
+                        stack.push(XPathValue::empty_nodeset());
+                    }
+                } else {
+                    stack.push(XPathValue::empty_nodeset());
+                }
+            }
+
             Op::Union => {
                 let right = stack.pop().unwrap_or(XPathValue::empty_nodeset());
                 let left = stack.pop().unwrap_or(XPathValue::empty_nodeset());
