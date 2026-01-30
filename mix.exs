@@ -1,7 +1,7 @@
 defmodule RustyXML.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/jeffhuen/rustyxml"
 
   def project do
@@ -30,9 +30,9 @@ defmodule RustyXML.MixProject do
 
   defp description do
     """
-    Ultra-fast, W3C-compliant XML parser and XPath 1.0 engine for Elixir. Rust NIF
-    implementation 6-40x faster than xmerl/SweetXml with 99% less memory.
-    Drop-in SweetXml replacement with ~x sigil and streaming support.
+    Ultra-fast XML parser and XPath 1.0 engine for Elixir, built from scratch as a
+    Rust NIF. 100% W3C/OASIS XML Conformance (1089/1089 tests). 6-40x faster than
+    xmerl/SweetXml. Drop-in SweetXml replacement with ~x sigil and streaming support.
     """
   end
 

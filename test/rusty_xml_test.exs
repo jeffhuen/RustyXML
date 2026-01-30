@@ -309,6 +309,145 @@ defmodule RustyXMLTest do
     end
   end
 
+  # ==========================================================================
+  # Lazy XPath + Batch Accessor Clamping
+  # ==========================================================================
+
+  describe "Native.xpath_lazy/2 and result accessors" do
+    setup do
+      xml = "<root><item id=\"1\">A</item><item id=\"2\">B</item><item id=\"3\">C</item></root>"
+      doc = RustyXML.Native.parse(xml)
+      result = RustyXML.Native.xpath_lazy(doc, "//item")
+      %{result: result}
+    end
+
+    test "result_count returns correct count", %{result: result} do
+      assert RustyXML.Native.result_count(result) == 3
+    end
+
+    test "result_text returns text for valid index", %{result: result} do
+      assert RustyXML.Native.result_text(result, 0) == "A"
+      assert RustyXML.Native.result_text(result, 2) == "C"
+    end
+
+    test "result_text returns nil for out-of-range index", %{result: result} do
+      assert RustyXML.Native.result_text(result, 99) == nil
+    end
+
+    test "result_attr returns attribute value", %{result: result} do
+      assert RustyXML.Native.result_attr(result, 0, "id") == "1"
+      assert RustyXML.Native.result_attr(result, 2, "id") == "3"
+    end
+
+    test "result_name returns element name", %{result: result} do
+      assert RustyXML.Native.result_name(result, 0) == "item"
+    end
+
+    test "result_node returns full element", %{result: result} do
+      node = RustyXML.Native.result_node(result, 0)
+      assert {:element, "item", _attrs, _children} = node
+    end
+  end
+
+  describe "batch accessor clamping" do
+    # Compute usize::MAX portably (works on both 32-bit and 64-bit BEAM)
+    # Compute usize::MAX portably — :wordsize returns bytes (4 or 8)
+    @usize_max Bitwise.bsl(1, :erlang.system_info(:wordsize) * 8) - 1
+
+    setup do
+      xml = "<r><i id=\"a\">X</i><i id=\"b\">Y</i><i id=\"c\">Z</i></r>"
+      doc = RustyXML.Native.parse(xml)
+      result = RustyXML.Native.xpath_lazy(doc, "//i")
+      %{result: result}
+    end
+
+    # -- result_texts/3 --
+
+    test "result_texts returns all items for exact range", %{result: result} do
+      texts = RustyXML.Native.result_texts(result, 0, 3)
+      assert texts == ["X", "Y", "Z"]
+    end
+
+    test "result_texts clamps when count exceeds results", %{result: result} do
+      texts = RustyXML.Native.result_texts(result, 0, 1_000_000)
+      assert texts == ["X", "Y", "Z"]
+    end
+
+    test "result_texts returns subset from offset", %{result: result} do
+      texts = RustyXML.Native.result_texts(result, 1, 100)
+      assert texts == ["Y", "Z"]
+    end
+
+    test "result_texts returns empty when start beyond range", %{result: result} do
+      texts = RustyXML.Native.result_texts(result, 99, 10)
+      assert texts == []
+    end
+
+    test "result_texts handles usize_max count without hanging", %{result: result} do
+      # This would previously iterate billions of times; now clamps to 3
+      texts = RustyXML.Native.result_texts(result, 0, @usize_max)
+      assert texts == ["X", "Y", "Z"]
+    end
+
+    # -- result_attrs/4 --
+
+    test "result_attrs returns all attrs for exact range", %{result: result} do
+      ids = RustyXML.Native.result_attrs(result, "id", 0, 3)
+      assert ids == ["a", "b", "c"]
+    end
+
+    test "result_attrs clamps when count exceeds results", %{result: result} do
+      ids = RustyXML.Native.result_attrs(result, "id", 0, 1_000_000)
+      assert ids == ["a", "b", "c"]
+    end
+
+    test "result_attrs returns subset from offset", %{result: result} do
+      ids = RustyXML.Native.result_attrs(result, "id", 2, 100)
+      assert ids == ["c"]
+    end
+
+    test "result_attrs returns empty when start beyond range", %{result: result} do
+      ids = RustyXML.Native.result_attrs(result, "id", 99, 10)
+      assert ids == []
+    end
+
+    test "result_attrs handles usize_max count without hanging", %{result: result} do
+      ids = RustyXML.Native.result_attrs(result, "id", 0, @usize_max)
+      assert ids == ["a", "b", "c"]
+    end
+
+    # -- result_extract/5 --
+
+    test "result_extract returns all maps for exact range", %{result: result} do
+      maps = RustyXML.Native.result_extract(result, 0, 3, ["id"], true)
+      assert length(maps) == 3
+      assert Enum.at(maps, 0)[:name] == "i"
+      assert Enum.at(maps, 0)[:text] == "X"
+      assert Enum.at(maps, 0)["id"] == "a"
+    end
+
+    test "result_extract clamps when count exceeds results", %{result: result} do
+      maps = RustyXML.Native.result_extract(result, 0, 1_000_000, ["id"], false)
+      assert length(maps) == 3
+    end
+
+    test "result_extract returns subset from offset", %{result: result} do
+      maps = RustyXML.Native.result_extract(result, 2, 100, ["id"], false)
+      assert length(maps) == 1
+      assert Enum.at(maps, 0)["id"] == "c"
+    end
+
+    test "result_extract returns empty when start beyond range", %{result: result} do
+      maps = RustyXML.Native.result_extract(result, 99, 10, ["id"], false)
+      assert maps == []
+    end
+
+    test "result_extract handles usize_max count without hanging", %{result: result} do
+      maps = RustyXML.Native.result_extract(result, 0, @usize_max, ["id"], true)
+      assert length(maps) == 3
+    end
+  end
+
   describe "Native.parse_events/1" do
     test "returns list of events" do
       events = RustyXML.Native.parse_events("<root>text</root>")

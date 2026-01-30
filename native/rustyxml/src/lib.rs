@@ -151,7 +151,7 @@ fn reset_rust_memory_stats() -> (usize, usize) {
 // ============================================================================
 
 /// Parse XML and return list of events
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_events<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let events: Vec<_> = reader::slice::SliceReader::new(bytes)
@@ -212,7 +212,7 @@ fn parse_events<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
 
 /// Parse XML into a DOM document (returns ResourceArc)
 /// Lenient mode - accepts malformed XML
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice().to_vec();
     let resource = DocumentResource::new(bytes);
@@ -222,7 +222,7 @@ fn parse<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
 
 /// Parse XML in strict mode (returns {:ok, doc} or {:error, reason})
 /// Rejects malformed XML per XML 1.0 specification
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_strict<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice().to_vec();
 
@@ -246,8 +246,9 @@ fn xpath_query<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> NifRe
     });
 
     match result {
-        Some(term) => Ok(term),
-        None => Ok(atoms::nil().encode(env)),
+        Ok(term) => Ok(term),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(atoms::nil().encode(env)),
     }
 }
 
@@ -273,8 +274,9 @@ fn xpath_query_raw<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> N
     });
 
     match result {
-        Some(term) => Ok(term),
-        None => Ok(atoms::nil().encode(env)),
+        Ok(term) => Ok(term),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(atoms::nil().encode(env)),
     }
 }
 
@@ -295,12 +297,13 @@ fn xpath_lazy<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> NifRes
     });
 
     match nodes {
-        Some(Ok(node_ids)) => {
+        Ok(Ok(node_ids)) => {
             let result = XPathResultResource::new(doc_ref.clone(), node_ids);
             Ok(ResourceArc::new(result).encode(env))
         }
-        Some(Err(e)) => Ok((atoms::error(), e).encode(env)),
-        None => Ok(atoms::nil().encode(env)),
+        Ok(Err(e)) => Ok((atoms::error(), e).encode(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(atoms::nil().encode(env)),
     }
 }
 
@@ -345,7 +348,8 @@ fn result_text<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> Ni
     });
 
     match text {
-        Some(Some(s)) => Ok(s.encode(env)),
+        Ok(Some(s)) => Ok(s.encode(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
         _ => Ok(atoms::nil().encode(env)),
     }
 }
@@ -398,7 +402,8 @@ fn result_attr<'a>(
     });
 
     match attr_value {
-        Some(Some(s)) => Ok(s.encode(env)),
+        Ok(Some(s)) => Ok(s.encode(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
         _ => Ok(atoms::nil().encode(env)),
     }
 }
@@ -417,7 +422,8 @@ fn result_name<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> Ni
     });
 
     match name {
-        Some(Some(s)) => Ok(s.encode(env)),
+        Ok(Some(s)) => Ok(s.encode(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
         _ => Ok(atoms::nil().encode(env)),
     }
 }
@@ -435,8 +441,9 @@ fn result_node<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> Ni
         .with_view(|view| node_to_term(env, &view, node_id));
 
     match term {
-        Some(t) => Ok(t),
-        None => Ok(atoms::nil().encode(env)),
+        Ok(t) => Ok(t),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(atoms::nil().encode(env)),
     }
 }
 
@@ -455,8 +462,12 @@ fn result_texts<'a>(
     let texts = result_ref.doc.with_view(|view| {
         use crate::dom::NodeKind;
 
-        let mut results = Vec::with_capacity(count);
-        for i in start..(start + count) {
+        // Clamp to actual result count — saturating_add handles overflow,
+        // min() bounds iteration to real results
+        let end = start.saturating_add(count).min(result_ref.count());
+        let actual = end.saturating_sub(start);
+        let mut results = Vec::with_capacity(actual);
+        for i in start..end {
             let text = if let Some(node_id) = result_ref.get_node_id(i) {
                 if let Some(node) = view.get_node(node_id) {
                     match node.kind {
@@ -486,7 +497,7 @@ fn result_texts<'a>(
     });
 
     match texts {
-        Some(list) => {
+        Ok(list) => {
             let mut term_list = Term::list_new_empty(env);
             for text in list.into_iter().rev() {
                 let term = match text {
@@ -497,7 +508,8 @@ fn result_texts<'a>(
             }
             Ok(term_list)
         }
-        None => Ok(Term::list_new_empty(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(Term::list_new_empty(env)),
     }
 }
 
@@ -513,8 +525,12 @@ fn result_attrs<'a>(
     let attrs = result_ref.doc.with_view(|view| {
         use crate::dom::DocumentAccess;
 
-        let mut results = Vec::with_capacity(count);
-        for i in start..(start + count) {
+        // Clamp to actual result count — saturating_add handles overflow,
+        // min() bounds iteration to real results
+        let end = start.saturating_add(count).min(result_ref.count());
+        let actual = end.saturating_sub(start);
+        let mut results = Vec::with_capacity(actual);
+        for i in start..end {
             let attr = if let Some(node_id) = result_ref.get_node_id(i) {
                 view.get_attribute(node_id, attr_name)
                     .map(|s| s.to_string())
@@ -527,7 +543,7 @@ fn result_attrs<'a>(
     });
 
     match attrs {
-        Some(list) => {
+        Ok(list) => {
             let mut term_list = Term::list_new_empty(env);
             for attr in list.into_iter().rev() {
                 let term = match attr {
@@ -538,7 +554,8 @@ fn result_attrs<'a>(
             }
             Ok(term_list)
         }
-        None => Ok(Term::list_new_empty(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(Term::list_new_empty(env)),
     }
 }
 
@@ -558,9 +575,13 @@ fn result_extract<'a>(
     use rustler::types::map::map_new;
 
     let results = result_ref.doc.with_view(|view| {
-        let mut list = Vec::with_capacity(count);
+        // Clamp to actual result count — saturating_add handles overflow,
+        // min() bounds iteration to real results
+        let end = start.saturating_add(count).min(result_ref.count());
+        let actual = end.saturating_sub(start);
+        let mut list = Vec::with_capacity(actual);
 
-        for i in start..(start + count) {
+        for i in start..end {
             if let Some(node_id) = result_ref.get_node_id(i) {
                 let mut map = map_new(env);
 
@@ -617,19 +638,20 @@ fn result_extract<'a>(
     });
 
     match results {
-        Some(list) => {
+        Ok(list) => {
             let mut term_list = Term::list_new_empty(env);
             for map in list.into_iter().rev() {
                 term_list = term_list.list_prepend(map);
             }
             Ok(term_list)
         }
-        None => Ok(Term::list_new_empty(env)),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(Term::list_new_empty(env)),
     }
 }
 
 /// Parse and immediately query (convenience function)
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_and_xpath<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let doc = XmlDocument::parse(bytes);
@@ -652,8 +674,9 @@ fn get_root<'a>(env: Env<'a>, doc_ref: DocumentRef) -> NifResult<Term<'a>> {
     });
 
     match result {
-        Some(term) => Ok(term),
-        None => Ok(atoms::nil().encode(env)),
+        Ok(term) => Ok(term),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(atoms::nil().encode(env)),
     }
 }
 
@@ -664,7 +687,7 @@ fn get_root<'a>(env: Env<'a>, doc_ref: DocumentRef) -> NifResult<Term<'a>> {
 /// Execute parent XPath and evaluate subspecs for each result node
 /// Returns a list of maps: [%{"key1" => val1, "key2" => val2}, ...]
 /// Note: Keys are binaries (not atoms) to avoid atom table exhaustion
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn xpath_with_subspecs<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -719,7 +742,7 @@ fn xpath_with_subspecs<'a>(
 
 /// Get string value of an XPath result (for `s` modifier)
 /// Handles node-set by getting text content of first node
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn xpath_string_value<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let doc = XmlDocument::parse(bytes);
@@ -778,8 +801,9 @@ fn xpath_string_value_doc<'a>(
     });
 
     match result {
-        Some(term) => Ok(term),
-        None => Ok("".encode(env)),
+        Ok(term) => Ok(term),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok("".encode(env)),
     }
 }
 
@@ -883,7 +907,7 @@ fn streaming_take_events<'a>(
             let events = inner.take_events(max);
             Ok(events_to_term(env, events))
         }
-        Err(_) => Ok(Term::list_new_empty(env)),
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
     }
 }
 
@@ -907,7 +931,7 @@ fn streaming_take_elements<'a>(
             }
             Ok(list)
         }
-        Err(_) => Ok(Term::list_new_empty(env)),
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
     }
 }
 
@@ -919,7 +943,7 @@ fn streaming_available_elements<'a>(
 ) -> NifResult<Term<'a>> {
     match parser.inner.lock() {
         Ok(inner) => Ok(inner.available_elements().encode(env)),
-        Err(_) => Ok(0usize.encode(env)),
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
     }
 }
 
@@ -931,7 +955,7 @@ fn streaming_finalize<'a>(env: Env<'a>, parser: StreamingParserRef) -> NifResult
             let events = inner.finalize();
             Ok(events_to_term(env, events))
         }
-        Err(_) => Ok(Term::list_new_empty(env)),
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
     }
 }
 
@@ -945,7 +969,7 @@ fn streaming_status<'a>(env: Env<'a>, parser: StreamingParserRef) -> NifResult<T
             inner.has_pending(),
         )
             .encode(env)),
-        Err(_) => Ok((0usize, 0usize, false).encode(env)),
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
     }
 }
 
@@ -976,8 +1000,9 @@ fn xpath_parallel<'a>(
     });
 
     match result {
-        Some(term) => Ok(term),
-        None => Ok(Term::list_new_empty(env)),
+        Ok(term) => Ok(term),
+        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+        Err(_) => Ok(Term::list_new_empty(env)),
     }
 }
 
@@ -985,12 +1010,4 @@ fn xpath_parallel<'a>(
 // NIF Initialization
 // ============================================================================
 
-#[allow(non_local_definitions)]
-fn load(env: Env, _info: Term) -> bool {
-    let _ = rustler::resource!(StreamingParserResource, env);
-    let _ = rustler::resource!(DocumentResource, env);
-    let _ = rustler::resource!(XPathResultResource, env);
-    true
-}
-
-rustler::init!("Elixir.RustyXML.Native", load = load);
+rustler::init!("Elixir.RustyXML.Native");

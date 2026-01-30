@@ -2,9 +2,10 @@ defmodule RustyXML do
   @moduledoc """
   Ultra-fast XML parsing for Elixir with full XPath 1.0 support.
 
-  RustyXML is a high-performance XML parser powered by Rust NIFs with SIMD
-  acceleration. It provides a drop-in replacement for SweetXml with the
-  familiar `~x` sigil syntax.
+  RustyXML is a high-performance XML parser built from scratch as a Rust NIF
+  with SIMD acceleration. It achieves **100% W3C/OASIS XML Conformance**
+  (1089/1089 test cases) and provides a drop-in replacement for SweetXml with
+  the familiar `~x` sigil syntax.
 
   ## Quick Start
 

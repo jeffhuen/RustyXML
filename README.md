@@ -6,6 +6,7 @@
 
 ## Features
 
+- **100% W3C/OASIS XML Conformance** — 1089/1089 test cases pass ([details](#xml-conformance))
 - **SIMD-accelerated parsing** via memchr for fast delimiter detection
 - **Arena-based DOM** with NodeId indices for cache-friendly traversal
 - **Full XPath 1.0** with all 13 axes and 27+ functions
@@ -18,7 +19,7 @@
 
 ```elixir
 def deps do
-  [{:rusty_xml, "~> 0.1.0"}]
+  [{:rusty_xml, "~> 0.1.1"}]
 end
 ```
 
@@ -314,16 +315,22 @@ doc = RustyXML.parse("<1invalid/>", lenient: true)  # Works
 | **Strict** (default) | Drop-in SweetXml replacement, validating input, spec compliance |
 | **Lenient** | Processing third-party XML, web scraping, legacy data, fault tolerance |
 
-### OASIS/W3C Conformance
+### XML Conformance
 
-RustyXML is tested against the official [W3C XML Conformance Test Suite](https://www.w3.org/XML/Test/) (xmlconf) — the industry standard with 2000+ test cases from Sun, IBM, OASIS/NIST, and others.
+RustyXML is validated against the official [W3C XML Conformance Test Suite](https://www.w3.org/XML/Test/) (xmlconf) — the industry-standard suite with 2000+ test cases contributed by Sun, IBM, OASIS/NIST, and others. Each test encodes a specific clause of the XML 1.0 specification: malformed element names, entity boundary conditions, encoding declarations, comment syntax, CDATA nesting rules, and hundreds more edge cases.
 
-| Mode | Valid Documents | Not-Well-Formed |
-|------|-----------------|-----------------|
-| **Strict (default)** | 218/218 ✅ (100%) | 871/871 ✅ (100%) |
-| Lenient | 218/218 ✅ (100%) | 0/871 rejected |
+**RustyXML passes 100% of applicable tests** — 1089/1089 in strict mode:
 
-**RustyXML achieves 100% OASIS/W3C conformance** in strict mode — all 1089 applicable tests pass.
+| Category | Result | What it proves |
+|----------|--------|----------------|
+| Valid documents | 218/218 ✅ | Correctly parses all well-formed XML |
+| Not-well-formed | 871/871 ✅ | Correctly rejects every malformed input |
+
+This is a from-scratch parser, not a wrapper around an existing C or Rust library. Achieving full conformance required implementing every well-formedness constraint in [XML 1.0 §2.1](https://www.w3.org/TR/xml/#sec-well-formed) and verifying each one against the official test suite individually.
+
+Most alternative Rust XML crates (quick-xml, roxmltree) do not attempt full conformance or only pass a subset. SweetXml inherits conformance from Erlang's `:xmerl`, but xmerl is maintained by the OTP team — not built from the ground up.
+
+Lenient mode still parses all 218 valid documents correctly but intentionally accepts malformed input instead of rejecting it.
 
 To run conformance tests yourself:
 ```bash

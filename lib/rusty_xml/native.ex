@@ -26,6 +26,21 @@ defmodule RustyXML.Native do
   | `streaming_*` | Large files | Bounded memory |
   | `xpath_parallel/2` | Multiple queries | Parallel execution |
 
+  ## Scheduler Behaviour
+
+  NIFs that parse raw XML input run on the dirty CPU scheduler to avoid
+  blocking BEAM schedulers. These are: `parse_events/1`, `parse/1`,
+  `parse_strict/1`, `parse_and_xpath/2`, `xpath_with_subspecs/3`, and
+  `xpath_string_value/2`. Query NIFs on pre-parsed documents
+  (`xpath_query/2`, `xpath_lazy/2`, etc.) run on normal schedulers
+  because they perform sub-millisecond lookups on cached data.
+
+  ## Error Handling
+
+  Functions that access `Mutex`-protected resources (documents, streaming
+  parsers) return `{:error, :mutex_poisoned}` if the mutex has been
+  poisoned by a prior panic. Under normal operation this never occurs.
+
   """
 
   version = Mix.Project.config()[:version]
@@ -69,6 +84,8 @@ defmodule RustyXML.Native do
   @doc """
   Parse XML and return a list of events.
 
+  Runs on the dirty CPU scheduler since parse time scales with input size.
+
   Events are returned as tuples:
     * `{:start_element, name, attributes}` - Element start tag
     * `{:end_element, name}` - Element end tag
@@ -97,6 +114,8 @@ defmodule RustyXML.Native do
   @doc """
   Parse XML into a DOM document (lenient mode).
 
+  Runs on the dirty CPU scheduler since parse time scales with input size.
+
   Returns an opaque document reference that can be used with `xpath_query/2`
   and `get_root/1`. The document is cached and can be queried multiple times.
 
@@ -113,6 +132,8 @@ defmodule RustyXML.Native do
 
   @doc """
   Parse XML into a DOM document (strict mode).
+
+  Runs on the dirty CPU scheduler since parse time scales with input size.
 
   Returns `{:ok, document_ref}` on success, or `{:error, reason}` if the
   document is not well-formed per XML 1.0 specification.
@@ -142,6 +163,9 @@ defmodule RustyXML.Native do
     * String queries return a string
     * Number queries return a float
     * Boolean queries return true/false
+    * `{:error, :mutex_poisoned}` if the document mutex is poisoned
+
+  Returns `nil` if the document reference has no document.
 
   ## Examples
 
@@ -150,7 +174,7 @@ defmodule RustyXML.Native do
       #=> [{:element, "item", [], ["text"]}]
 
   """
-  @spec xpath_query(document_ref(), binary()) :: term()
+  @spec xpath_query(document_ref(), binary()) :: term() | nil | {:error, :mutex_poisoned}
   def xpath_query(_doc, _xpath), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -167,7 +191,7 @@ defmodule RustyXML.Native do
       #=> ["<item>text</item>"]
 
   """
-  @spec xpath_query_raw(document_ref(), binary()) :: [binary()] | term()
+  @spec xpath_query_raw(document_ref(), binary()) :: [binary()] | term() | {:error, :mutex_poisoned}
   def xpath_query_raw(_doc, _xpath), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -195,7 +219,8 @@ defmodule RustyXML.Native do
       first_name = RustyXML.Native.result_text(result, 0)  # Only builds 1 term
 
   """
-  @spec xpath_lazy(document_ref(), binary()) :: result_ref() | {:error, term()}
+  @spec xpath_lazy(document_ref(), binary()) ::
+          result_ref() | {:error, binary()} | {:error, :mutex_poisoned}
   def xpath_lazy(_doc, _xpath), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -209,20 +234,28 @@ defmodule RustyXML.Native do
 
   For text nodes, returns the text directly.
   For elements, returns concatenated text of all descendant text nodes.
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
   """
-  @spec result_text(result_ref(), non_neg_integer()) :: binary() | nil
+  @spec result_text(result_ref(), non_neg_integer()) ::
+          binary() | nil | {:error, :mutex_poisoned}
   def result_text(_result, _index), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get an attribute value from a node at the given index.
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
   """
-  @spec result_attr(result_ref(), non_neg_integer(), binary()) :: binary() | nil
+  @spec result_attr(result_ref(), non_neg_integer(), binary()) ::
+          binary() | nil | {:error, :mutex_poisoned}
   def result_attr(_result, _index, _attr_name), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get the element name of a node at the given index.
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
   """
-  @spec result_name(result_ref(), non_neg_integer()) :: binary() | nil
+  @spec result_name(result_ref(), non_neg_integer()) ::
+          binary() | nil | {:error, :mutex_poisoned}
   def result_name(_result, _index), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -230,8 +263,11 @@ defmodule RustyXML.Native do
 
   This builds the full nested structure, so use sparingly.
   Prefer `result_text/2` and `result_attr/3` for better performance.
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
   """
-  @spec result_node(result_ref(), non_neg_integer()) :: term() | nil
+  @spec result_node(result_ref(), non_neg_integer()) ::
+          term() | nil | {:error, :mutex_poisoned}
   def result_node(_result, _index), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -241,7 +277,12 @@ defmodule RustyXML.Native do
   @doc """
   Get text content for a range of nodes (single NIF call).
 
-  More efficient than calling `result_text/2` in a loop.
+  More efficient than calling `result_text/2` in a loop. The range is clamped
+  to the actual result count — indices beyond the result set are not iterated,
+  so the returned list may be shorter than `count`. Overflow of `start + count`
+  is handled safely via saturation.
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
 
   ## Examples
 
@@ -249,11 +290,15 @@ defmodule RustyXML.Native do
       texts = RustyXML.Native.result_texts(result, 0, 10)  # First 10 texts
 
   """
-  @spec result_texts(result_ref(), non_neg_integer(), non_neg_integer()) :: [binary() | nil]
+  @spec result_texts(result_ref(), non_neg_integer(), non_neg_integer()) ::
+          [binary() | nil] | {:error, :mutex_poisoned}
   def result_texts(_result, _start, _count), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get attribute values for a range of nodes (single NIF call).
+
+  The range is clamped to the actual result count (see `result_texts/3`).
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
 
   ## Examples
 
@@ -261,16 +306,18 @@ defmodule RustyXML.Native do
       ids = RustyXML.Native.result_attrs(result, "id", 0, 10)  # First 10 @id values
 
   """
-  @spec result_attrs(result_ref(), binary(), non_neg_integer(), non_neg_integer()) :: [
-          binary() | nil
-        ]
+  @spec result_attrs(result_ref(), binary(), non_neg_integer(), non_neg_integer()) ::
+          [binary() | nil] | {:error, :mutex_poisoned}
   def result_attrs(_result, _attr_name, _start, _count), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Extract multiple fields from each node in a range (single NIF call).
 
   Returns a list of maps with the requested fields. Much more efficient
-  than calling individual accessors.
+  than calling individual accessors. The range is clamped to the actual
+  result count (see `result_texts/3`).
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
 
   ## Examples
 
@@ -288,12 +335,14 @@ defmodule RustyXML.Native do
 
   """
   @spec result_extract(result_ref(), non_neg_integer(), non_neg_integer(), [binary()], boolean()) ::
-          [map()]
+          [map()] | {:error, :mutex_poisoned}
   def result_extract(_result, _start, _count, _attr_names, _include_text),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Parse XML and execute an XPath query in one call.
+
+  Runs on the dirty CPU scheduler since it parses raw XML input.
 
   More efficient than `parse/1` + `xpath_query/2` for single queries
   since it doesn't create a persistent document reference.
@@ -319,7 +368,7 @@ defmodule RustyXML.Native do
       #=> {:element, "root", [{"attr", "value"}], [...]}
 
   """
-  @spec get_root(document_ref()) :: term()
+  @spec get_root(document_ref()) :: term() | nil | {:error, :mutex_poisoned}
   def get_root(_doc), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -328,6 +377,8 @@ defmodule RustyXML.Native do
 
   @doc """
   Execute parent XPath and evaluate subspecs for each result node.
+
+  Runs on the dirty CPU scheduler since it parses raw XML input.
 
   Returns a list of maps with each subspec evaluated relative to the parent nodes.
 
@@ -344,6 +395,7 @@ defmodule RustyXML.Native do
   @doc """
   Execute XPath and return string value of result.
 
+  Runs on the dirty CPU scheduler since it parses raw XML input.
   For node-sets, returns text content of first node.
 
   ## Examples
@@ -357,8 +409,11 @@ defmodule RustyXML.Native do
 
   @doc """
   Execute XPath on document reference and return string value.
+
+  Returns `{:error, :mutex_poisoned}` if the document mutex is poisoned.
   """
-  @spec xpath_string_value_doc(document_ref(), binary()) :: binary()
+  @spec xpath_string_value_doc(document_ref(), binary()) ::
+          binary() | {:error, :mutex_poisoned}
   def xpath_string_value_doc(_doc, _xpath), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -400,33 +455,38 @@ defmodule RustyXML.Native do
   @doc """
   Feed a chunk of XML data to the streaming parser.
 
-  Returns `{available_events, buffer_size}`.
-
+  Returns `{available_events, buffer_size}` on success, or
+  `{:error, :mutex_poisoned}` if the parser mutex is poisoned.
   """
-  @spec streaming_feed(parser_ref(), binary()) :: {non_neg_integer(), non_neg_integer()}
+  @spec streaming_feed(parser_ref(), binary()) ::
+          {non_neg_integer(), non_neg_integer()} | {:error, :mutex_poisoned}
   def streaming_feed(_parser, _chunk), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Take up to `max` events from the streaming parser.
 
+  Returns `{:error, :mutex_poisoned}` if the parser mutex is poisoned.
   """
-  @spec streaming_take_events(parser_ref(), non_neg_integer()) :: [xml_event()]
+  @spec streaming_take_events(parser_ref(), non_neg_integer()) ::
+          [xml_event()] | {:error, :mutex_poisoned}
   def streaming_take_events(_parser, _max), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Finalize the streaming parser and get remaining events.
 
+  Returns `{:error, :mutex_poisoned}` if the parser mutex is poisoned.
   """
-  @spec streaming_finalize(parser_ref()) :: [xml_event()]
+  @spec streaming_finalize(parser_ref()) :: [xml_event()] | {:error, :mutex_poisoned}
   def streaming_finalize(_parser), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get streaming parser status.
 
-  Returns `{available_events, buffer_size, has_pending}`.
-
+  Returns `{available_events, buffer_size, has_pending}` on success, or
+  `{:error, :mutex_poisoned}` if the parser mutex is poisoned.
   """
-  @spec streaming_status(parser_ref()) :: {non_neg_integer(), non_neg_integer(), boolean()}
+  @spec streaming_status(parser_ref()) ::
+          {non_neg_integer(), non_neg_integer(), boolean()} | {:error, :mutex_poisoned}
   def streaming_status(_parser), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -437,14 +497,16 @@ defmodule RustyXML.Native do
   reconstruction in Elixir.
 
   """
-  @spec streaming_take_elements(parser_ref(), non_neg_integer()) :: [binary()]
+  @spec streaming_take_elements(parser_ref(), non_neg_integer()) ::
+          [binary()] | {:error, :mutex_poisoned}
   def streaming_take_elements(_parser, _max), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Get number of available complete elements.
 
   """
-  @spec streaming_available_elements(parser_ref()) :: non_neg_integer()
+  @spec streaming_available_elements(parser_ref()) ::
+          non_neg_integer() | {:error, :mutex_poisoned}
   def streaming_available_elements(_parser), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -463,7 +525,7 @@ defmodule RustyXML.Native do
       RustyXML.Native.xpath_parallel(doc, ["//a", "//b", "//c"])
 
   """
-  @spec xpath_parallel(document_ref(), [binary()]) :: [term()]
+  @spec xpath_parallel(document_ref(), [binary()]) :: [term()] | {:error, :mutex_poisoned}
   def xpath_parallel(_doc, _xpaths), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================

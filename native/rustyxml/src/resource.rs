@@ -2,7 +2,7 @@
 //!
 //! Persistent state for streaming parsers and DOM documents.
 
-use crate::dom::{OwnedXmlDocument, XmlDocument, XmlDocumentView};
+use crate::dom::{OwnedXmlDocument, XmlDocumentView};
 use crate::strategy::StreamingParser;
 use rustler::ResourceArc;
 use std::sync::Mutex;
@@ -25,6 +25,9 @@ impl StreamingParserResource {
         }
     }
 }
+
+#[rustler::resource_impl]
+impl rustler::Resource for StreamingParserResource {}
 
 impl Default for StreamingParserResource {
     fn default() -> Self {
@@ -59,45 +62,25 @@ impl DocumentResource {
         }
     }
 
-    /// Get a view into the document for XPath evaluation
+    /// Get a view into the document for XPath evaluation.
     /// This is O(1) - no re-parsing!
-    pub fn with_view<F, R>(&self, f: F) -> Option<R>
+    ///
+    /// # Errors
+    ///
+    /// Returns `"mutex_poisoned"` if the document mutex is poisoned,
+    /// or `"no_document"` if no document is present.
+    pub fn with_view<F, R>(&self, f: F) -> Result<R, &'static str>
     where
         F: FnOnce(XmlDocumentView<'_>) -> R,
     {
-        let guard = self.doc.lock().ok()?;
-        let owned = guard.as_ref()?;
-        Some(f(owned.as_borrowed()))
-    }
-
-    /// Legacy: Get document for parsing (still re-parses for XmlDocument API)
-    /// TODO: Phase this out in favor of with_view
-    pub fn with_doc<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&XmlDocument) -> R,
-    {
-        let guard = self.doc.lock().ok()?;
-        let owned = guard.as_ref()?;
-        // For now, re-parse to get XmlDocument API
-        // This will be optimized when XPath uses XmlDocumentView
-        let doc = XmlDocument::parse(&owned.input);
-        Some(f(&doc))
-    }
-
-    /// Get node count without parsing
-    pub fn node_count(&self) -> Option<usize> {
-        let guard = self.doc.lock().ok()?;
-        guard.as_ref().map(|d| d.node_count())
-    }
-
-    /// Get root element name without parsing
-    pub fn root_name(&self) -> Option<String> {
-        let guard = self.doc.lock().ok()?;
-        guard
-            .as_ref()
-            .and_then(|d| d.root_name().map(|s| s.to_string()))
+        let guard = self.doc.lock().map_err(|_| "mutex_poisoned")?;
+        let owned = guard.as_ref().ok_or("no_document")?;
+        Ok(f(owned.as_borrowed()))
     }
 }
+
+#[rustler::resource_impl]
+impl rustler::Resource for DocumentResource {}
 
 impl Default for DocumentResource {
     fn default() -> Self {
@@ -140,6 +123,9 @@ impl XPathResultResource {
         self.nodes.get(index).copied()
     }
 }
+
+#[rustler::resource_impl]
+impl rustler::Resource for XPathResultResource {}
 
 /// Type alias for result set ResourceArc
 pub type XPathResultRef = ResourceArc<XPathResultResource>;

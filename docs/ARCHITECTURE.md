@@ -10,7 +10,7 @@ Unlike projects that wrap existing Rust crates (like quick-xml or roxmltree), Ru
 
 - **Direct BEAM term construction** - Results go straight to Erlang terms, no intermediate serialization
 - **ResourceArc integration** - DOM documents and streaming parser state managed by BEAM's garbage collector
-- **Dirty scheduler awareness** - Parallel XPath operations run on dirty CPU schedulers
+- **Dirty scheduler awareness** - All raw-XML parse NIFs and parallel XPath run on dirty CPU schedulers
 - **Zero-copy where possible** - `Cow<[u8]>` borrows data, only allocates for entity decoding
 - **Arena-based DOM** - Cache-friendly node storage with `u32` NodeId indices
 
@@ -37,10 +37,10 @@ RustyXML offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **1275+ tests** including full W3C/OASIS XML Conformance Test Suite
-- **100% OASIS compliance** - All 1089 conformance tests pass (218 valid + 871 not-wf)
-- **Cross-strategy validation** - All strategies produce consistent output
-- **SweetXml compatibility** - Verified identical behavior for common API patterns
+- **100% W3C/OASIS XML Conformance** — All 1089 applicable tests pass (218 valid + 871 not-well-formed rejections), verified individually against the official [xmlconf](https://www.w3.org/XML/Test/) suite. This is a from-scratch parser, not a wrapper — every well-formedness constraint in XML 1.0 was implemented and tested.
+- **1296+ tests** including the full conformance suite, batch accessor clamping, and lazy XPath coverage
+- **Cross-strategy validation** — All strategies produce consistent output
+- **SweetXml compatibility** — Verified identical behavior for common API patterns
 
 ---
 
@@ -510,7 +510,7 @@ NIFs should complete in under 1ms to avoid blocking schedulers.
 
 | Approach | Used By | Description |
 |----------|---------|-------------|
-| Dirty Schedulers | `xpath_parallel` | Runs on separate dirty CPU scheduler |
+| Dirty Schedulers | `parse`, `parse_strict`, `parse_events`, `parse_and_xpath`, `xpath_with_subspecs`, `xpath_string_value`, `xpath_parallel` | Runs on separate dirty CPU scheduler |
 | Chunked Processing | `streaming_*` | Returns control between chunks |
 | Stateful Resource | `streaming_*` | Lets Elixir control iteration |
 | Fast SIMD | all strategies | Completes quickly via hardware acceleration |
@@ -528,7 +528,7 @@ RustyXML is designed to never crash the BEAM VM:
 
 - **No `.unwrap()` in NIF code paths** - All fallible operations use proper error handling
 - **Pre-defined atoms** - Common atoms (`ok`, `error`, `nil`, `text`, `name`) created at compile time
-- **Graceful mutex handling** - Poisoned mutexes return default values instead of panicking
+- **Graceful mutex handling** - Poisoned mutexes return `{:error, :mutex_poisoned}` tuples instead of panicking
 - **Graceful map operations** - Failed map operations preserve existing state
 
 ```rust
@@ -536,11 +536,11 @@ RustyXML is designed to never crash the BEAM VM:
 let error_atom = Atom::from_str(env, "error").unwrap();
 let inner = parser.inner.lock().unwrap();
 
-// After (panic-safe)
+// After (panic-safe, surfaces error to Elixir)
 atoms::error()  // Pre-defined at compile time
 match parser.inner.lock() {
     Ok(inner) => { /* normal operation */ }
-    Err(_) => { /* return default value */ }
+    Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
 }
 ```
 
