@@ -9,18 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] - 2026-01-29
 
-### Changed
+### NIF Safety & BEAM Integration Hardening
+
+Comprehensive pass to align the Rust NIF layer with BEAM best practices:
+scheduler safety, explicit error propagation, input bounds checking, and
+modern Rustler patterns.
 
 - **Dirty CPU schedulers for parse NIFs** — `parse/1`, `parse_strict/1`,
   `parse_events/1`, `parse_and_xpath/2`, `xpath_with_subspecs/3`, and
   `xpath_string_value/2` now run on dirty CPU schedulers. These NIFs accept
   raw XML input whose parse time scales with input size, so they should not
   block normal BEAM schedulers.
-
-- **Modern Rustler resource registration** — Replaced the deprecated
-  `rustler::resource!` macro and `load` callback with `#[rustler::resource_impl]`
-  trait implementations (Rustler 0.37+ pattern). No API or behavioral changes;
-  this is an internal modernisation.
 
 - **Consistent mutex poison handling** — All NIFs that access a `Mutex`-protected
   resource now return `{:error, :mutex_poisoned}` when the mutex is poisoned,
@@ -32,8 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `streaming_take_elements/2`, `streaming_available_elements/1`,
   `streaming_finalize/1`, and `streaming_status/1`.
 
-### Fixed
-
 - **Batch accessor overflow and DoS guard** — `result_texts/3`, `result_attrs/4`,
   and `result_extract/5` now use `saturating_add` for overflow-safe arithmetic
   and clamp the iteration range to the actual result count. This prevents both
@@ -42,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   range extends beyond the result set (previously those trailing entries were
   `nil`). A `count` greater than or equal to the remaining results returns
   all available items from `start`.
+
+- **Modern Rustler resource registration** — Replaced the deprecated
+  `rustler::resource!` macro and `load` callback with `#[rustler::resource_impl]`
+  trait implementations (Rustler 0.37+ pattern). No API or behavioral changes;
+  this is an internal modernisation.
+
+- **Dead code removal** — Removed unused `with_doc`, `node_count`, and
+  `root_name` methods from `DocumentResource`.
 
 ## [0.1.0] - 2026-01-26
 
