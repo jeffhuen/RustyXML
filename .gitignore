@@ -47,3 +47,5 @@ Thumbs.db
 
 # Local config (force_build, etc.)
 /config/
+
+Elixir_NIF_practices.md

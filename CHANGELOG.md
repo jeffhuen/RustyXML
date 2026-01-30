@@ -11,42 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### NIF Safety & BEAM Integration Hardening
 
-Comprehensive pass to align the Rust NIF layer with BEAM best practices:
-scheduler safety, explicit error propagation, input bounds checking, and
-modern Rustler patterns.
-
 - **Dirty CPU schedulers for parse NIFs** — `parse/1`, `parse_strict/1`,
   `parse_events/1`, `parse_and_xpath/2`, `xpath_with_subspecs/3`, and
-  `xpath_string_value/2` now run on dirty CPU schedulers. These NIFs accept
-  raw XML input whose parse time scales with input size, so they should not
-  block normal BEAM schedulers.
+  `xpath_string_value/2` now run on dirty CPU schedulers. These NIFs
+  accept raw XML input whose parse time scales with input size, so they
+  no longer block normal BEAM schedulers.
 
-- **Consistent mutex poison handling** — All NIFs that access a `Mutex`-protected
-  resource now return `{:error, :mutex_poisoned}` when the mutex is poisoned,
-  instead of silently returning `nil`, an empty list, or a zero value. Affected
-  functions: `xpath_query/2`, `xpath_query_raw/2`, `xpath_lazy/2`,
-  `result_text/2`, `result_attr/3`, `result_name/2`, `result_node/2`,
-  `result_texts/3`, `result_attrs/4`, `result_extract/5`, `get_root/1`,
-  `xpath_string_value_doc/2`, `xpath_parallel/2`, `streaming_take_events/2`,
-  `streaming_take_elements/2`, `streaming_available_elements/1`,
-  `streaming_finalize/1`, and `streaming_status/1`.
+- **Explicit error tuples for internal failures** — All functions that
+  access a parsed document or streaming parser now return
+  `{:error, :mutex_poisoned}` instead of silently returning `nil`, an
+  empty list, or a zero value when an internal error has occurred.
+  Under normal operation this never triggers.
 
-- **Batch accessor overflow and DoS guard** — `result_texts/3`, `result_attrs/4`,
-  and `result_extract/5` now use `saturating_add` for overflow-safe arithmetic
-  and clamp the iteration range to the actual result count. This prevents both
-  OOM from adversarial `count` values and CPU stalls from iterating billions of
-  no-op indices. The returned list may now be shorter than `count` when the
-  range extends beyond the result set (previously those trailing entries were
-  `nil`). A `count` greater than or equal to the remaining results returns
-  all available items from `start`.
-
-- **Modern Rustler resource registration** — Replaced the deprecated
-  `rustler::resource!` macro and `load` callback with `#[rustler::resource_impl]`
-  trait implementations (Rustler 0.37+ pattern). No API or behavioral changes;
-  this is an internal modernisation.
-
-- **Dead code removal** — Removed unused `with_doc`, `node_count`, and
-  `root_name` methods from `DocumentResource`.
+- **Batch accessor clamping** — `result_texts/3`, `result_attrs/4`, and
+  `result_extract/5` now clamp the iteration range to the actual result
+  count. The returned list may be shorter than `count` when the range
+  extends beyond the result set (previously those trailing entries were
+  `nil`). A `count` greater than or equal to the remaining results
+  returns all available items from `start`. Overflow of `start + count`
+  is handled safely.
 
 ## [0.1.0] - 2026-01-26
 

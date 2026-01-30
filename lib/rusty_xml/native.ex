@@ -191,7 +191,8 @@ defmodule RustyXML.Native do
       #=> ["<item>text</item>"]
 
   """
-  @spec xpath_query_raw(document_ref(), binary()) :: [binary()] | term() | {:error, :mutex_poisoned}
+  @spec xpath_query_raw(document_ref(), binary()) ::
+          [binary()] | term() | {:error, :mutex_poisoned}
   def xpath_query_raw(_doc, _xpath), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================

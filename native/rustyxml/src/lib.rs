@@ -2,15 +2,9 @@
 //!
 //! Strategies:
 //! A: Zero-copy slice parser (parse_events)
-//! B: Buffer-based reader (for streams)
 //! C: DOM parser with XPath (parse, xpath)
 //! D: Streaming tag parser (streaming_*)
 //! E: Parallel XPath (xpath_parallel)
-
-// Allow dead code for scaffolded modules not yet fully integrated
-#![allow(dead_code)]
-// DocumentAccess trait imports are needed for method resolution even though the trait name isn't directly used
-#![allow(unused_imports)]
 
 use rustler::{Binary, Encoder, Env, NifResult, ResourceArc, Term};
 
@@ -29,12 +23,17 @@ mod atoms {
     }
 }
 
+#[allow(dead_code)]
 mod core;
+#[allow(dead_code)]
 mod dom;
+#[allow(dead_code)]
 mod reader;
 mod resource;
+#[allow(dead_code)]
 mod strategy;
 mod term;
+#[allow(dead_code)]
 mod xpath;
 
 use dom::XmlDocument;
@@ -322,7 +321,7 @@ fn result_text<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> Ni
     };
 
     let text = result_ref.doc.with_view(|view| {
-        use crate::dom::{DocumentAccess, NodeKind};
+        use crate::dom::NodeKind;
 
         // Get text content - either direct text node or concatenated child text
         if let Some(node) = view.get_node(node_id) {
@@ -396,7 +395,6 @@ fn result_attr<'a>(
     };
 
     let attr_value = result_ref.doc.with_view(|view| {
-        use crate::dom::DocumentAccess;
         view.get_attribute(node_id, attr_name)
             .map(|s| s.to_string())
     });
@@ -416,10 +414,9 @@ fn result_name<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> Ni
         None => return Ok(atoms::nil().encode(env)),
     };
 
-    let name = result_ref.doc.with_view(|view| {
-        use crate::dom::DocumentAccess;
-        view.node_name(node_id).map(|s| s.to_string())
-    });
+    let name = result_ref
+        .doc
+        .with_view(|view| view.node_name(node_id).map(|s| s.to_string()));
 
     match name {
         Ok(Some(s)) => Ok(s.encode(env)),
@@ -523,8 +520,6 @@ fn result_attrs<'a>(
     count: usize,
 ) -> NifResult<Term<'a>> {
     let attrs = result_ref.doc.with_view(|view| {
-        use crate::dom::DocumentAccess;
-
         // Clamp to actual result count — saturating_add handles overflow,
         // min() bounds iteration to real results
         let end = start.saturating_add(count).min(result_ref.count());
@@ -571,7 +566,7 @@ fn result_extract<'a>(
     attr_names: Vec<&str>,
     include_text: bool,
 ) -> NifResult<Term<'a>> {
-    use crate::dom::{DocumentAccess, NodeKind};
+    use crate::dom::NodeKind;
     use rustler::types::map::map_new;
 
     let results = result_ref.doc.with_view(|view| {

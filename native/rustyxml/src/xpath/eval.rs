@@ -119,7 +119,8 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                         if attr_values.is_empty() {
                             stack.push(XPathValue::empty_nodeset());
                         } else if attr_values.len() == 1 {
-                            stack.push(XPathValue::String(attr_values.pop().unwrap()));
+                            // Safe: len() == 1 guarantees pop() returns Some
+                            stack.push(XPathValue::String(attr_values.pop().unwrap_or_default()));
                         } else {
                             // Multiple attribute values - wrap in a special type
                             // For now, join them or return as strings

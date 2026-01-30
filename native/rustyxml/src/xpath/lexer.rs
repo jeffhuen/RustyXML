@@ -256,7 +256,10 @@ impl<'a> Lexer<'a> {
 
     /// Read a string literal
     fn read_string(&mut self) -> Token {
-        let quote = self.peek().unwrap();
+        // Safe: read_string is only called when peek() matched a quote char
+        let quote = self
+            .peek()
+            .expect("read_string called only when peek matched a quote");
         self.advance(1); // Skip opening quote
 
         let start = self.pos;

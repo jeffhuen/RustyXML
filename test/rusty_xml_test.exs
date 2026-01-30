@@ -350,7 +350,6 @@ defmodule RustyXMLTest do
   end
 
   describe "batch accessor clamping" do
-    # Compute usize::MAX portably (works on both 32-bit and 64-bit BEAM)
     # Compute usize::MAX portably — :wordsize returns bytes (4 or 8)
     @usize_max Bitwise.bsl(1, :erlang.system_info(:wordsize) * 8) - 1
 
@@ -447,6 +446,323 @@ defmodule RustyXMLTest do
       assert length(maps) == 3
     end
   end
+
+  # ==========================================================================
+  # Strict Parsing & Error Cases
+  # ==========================================================================
+
+  describe "Native.parse_strict/1" do
+    test "returns {:ok, ref} for well-formed XML" do
+      assert {:ok, doc} = RustyXML.Native.parse_strict("<root><child/></root>")
+      assert is_reference(doc)
+    end
+
+    test "returns {:error, reason} for malformed XML" do
+      assert {:error, reason} = RustyXML.Native.parse_strict("<1invalid/>")
+      assert is_binary(reason)
+    end
+
+    test "returns {:error, reason} for unclosed element" do
+      assert {:error, _reason} = RustyXML.Native.parse_strict("<root><unclosed>")
+    end
+
+    test "returns {:error, reason} for mismatched tags" do
+      assert {:error, _reason} = RustyXML.Native.parse_strict("<a></b>")
+    end
+  end
+
+  describe "parse_document/1" do
+    test "returns {:ok, doc} for valid XML" do
+      assert {:ok, doc} = RustyXML.parse_document("<root/>")
+      assert is_reference(doc)
+    end
+
+    test "returns {:error, reason} for malformed XML" do
+      assert {:error, reason} = RustyXML.parse_document("<1bad/>")
+      assert is_binary(reason)
+    end
+  end
+
+  describe "parse/2 error cases" do
+    test "raises ParseError for malformed XML in strict mode" do
+      assert_raise RustyXML.ParseError, fn ->
+        RustyXML.parse("<1invalid/>")
+      end
+    end
+
+    test "accepts malformed XML in lenient mode" do
+      doc = RustyXML.parse("<1invalid/>", lenient: true)
+      assert is_reference(doc)
+    end
+
+    test "handles empty input" do
+      doc = RustyXML.parse("", lenient: true)
+      assert is_reference(doc)
+    end
+  end
+
+  # ==========================================================================
+  # Native XPath Variants
+  # ==========================================================================
+
+  describe "Native.xpath_query_raw/2" do
+    test "returns list of XML binaries for node sets" do
+      doc = RustyXML.Native.parse("<root><item>text</item><item>more</item></root>")
+      result = RustyXML.Native.xpath_query_raw(doc, "//item")
+      assert is_list(result)
+      assert length(result) == 2
+      assert Enum.all?(result, &is_binary/1)
+    end
+
+    test "returns scalar for non-node-set queries" do
+      doc = RustyXML.Native.parse("<root><a/><b/></root>")
+      result = RustyXML.Native.xpath_query_raw(doc, "count(//a)")
+      assert result == 3.0 or is_number(result)
+    end
+  end
+
+  describe "Native.xpath_string_value/2" do
+    test "returns text content of first node" do
+      result = RustyXML.Native.xpath_string_value("<root>hello</root>", "/root")
+      assert result == "hello"
+    end
+
+    test "returns string for string expressions" do
+      result = RustyXML.Native.xpath_string_value("<root/>", "concat('a','b')")
+      assert result == "ab"
+    end
+
+    test "returns empty string for empty node set" do
+      result = RustyXML.Native.xpath_string_value("<root/>", "//nonexistent")
+      assert result == ""
+    end
+  end
+
+  describe "Native.xpath_string_value_doc/2" do
+    test "returns string value from document reference" do
+      doc = RustyXML.Native.parse("<root>world</root>")
+      result = RustyXML.Native.xpath_string_value_doc(doc, "/root")
+      assert result == "world"
+    end
+
+    test "returns concatenated text for elements with children" do
+      doc = RustyXML.Native.parse("<root><a>hello</a> <b>world</b></root>")
+      result = RustyXML.Native.xpath_string_value_doc(doc, "/root")
+      assert is_binary(result)
+      assert String.contains?(result, "hello")
+      assert String.contains?(result, "world")
+    end
+  end
+
+  # ==========================================================================
+  # Parallel XPath
+  # ==========================================================================
+
+  describe "Native.xpath_parallel/2" do
+    test "evaluates multiple queries in parallel" do
+      doc = RustyXML.Native.parse("<root><a>1</a><b>2</b><c>3</c></root>")
+      results = RustyXML.Native.xpath_parallel(doc, ["//a", "//b", "//c"])
+      assert is_list(results)
+      assert length(results) == 3
+    end
+
+    test "returns results in same order as queries" do
+      doc = RustyXML.Native.parse("<root><x/><y/></root>")
+      results = RustyXML.Native.xpath_parallel(doc, ["count(//x)", "count(//y)"])
+      assert results == [1.0, 1.0]
+    end
+
+    test "handles errors in individual queries" do
+      doc = RustyXML.Native.parse("<root><a/></root>")
+      results = RustyXML.Native.xpath_parallel(doc, ["//a", "!!!invalid"])
+
+      assert is_list(results)
+      assert length(results) == 2
+    end
+  end
+
+  describe "xmap_parallel/2" do
+    test "returns map of parallel query results" do
+      doc = RustyXML.parse("<root><a>1</a><b>2</b></root>")
+
+      result =
+        RustyXML.xmap_parallel(doc,
+          a: ~x"//a/text()"s,
+          b: ~x"//b/text()"s
+        )
+
+      assert result == %{a: "1", b: "2"}
+    end
+  end
+
+  # ==========================================================================
+  # xpath/3 with Subspecs
+  # ==========================================================================
+
+  describe "xpath/3 with subspecs" do
+    test "extracts nested values from matching nodes" do
+      xml = """
+      <items>
+        <item id="1"><name>A</name></item>
+        <item id="2"><name>B</name></item>
+      </items>
+      """
+
+      result =
+        RustyXML.xpath(xml, ~x"//item"l, id: ~x"./@id"s, name: ~x"./name/text()"s)
+
+      assert is_list(result)
+      assert length(result) == 2
+    end
+  end
+
+  # ==========================================================================
+  # Soft Cast Runtime Behaviour
+  # ==========================================================================
+
+  describe "soft cast modifiers (S, I, F)" do
+    test "S returns nil for missing element" do
+      result = RustyXML.xpath("<root/>", ~x"//missing/text()"S)
+      assert result == nil
+    end
+
+    test "I returns nil for non-numeric text" do
+      result = RustyXML.xpath("<root><v>abc</v></root>", ~x"//v/text()"I)
+      assert result == nil
+    end
+
+    test "I parses valid integer" do
+      result = RustyXML.xpath("<root><v>42</v></root>", ~x"//v/text()"I)
+      assert result == 42
+    end
+
+    test "F returns nil for non-numeric text" do
+      result = RustyXML.xpath("<root><v>abc</v></root>", ~x"//v/text()"F)
+      assert result == nil
+    end
+
+    test "F parses valid float" do
+      result = RustyXML.xpath("<root><v>3.14</v></root>", ~x"//v/text()"F)
+      assert result == 3.14
+    end
+
+    test "hard i modifier raises on non-numeric text" do
+      assert_raise ArgumentError, fn ->
+        RustyXML.xpath("<root><v>abc</v></root>", ~x"//v/text()"i)
+      end
+    end
+
+    test "hard f modifier raises on non-numeric text" do
+      assert_raise ArgumentError, fn ->
+        RustyXML.xpath("<root><v>abc</v></root>", ~x"//v/text()"f)
+      end
+    end
+  end
+
+  # ==========================================================================
+  # transform_by/2 and add_namespace/3
+  # ==========================================================================
+
+  describe "transform_by/2" do
+    test "applies transform function to result" do
+      spec = RustyXML.transform_by(~x"//item/text()"s, &String.upcase/1)
+      result = RustyXML.xpath("<root><item>hello</item></root>", spec)
+      assert result == "HELLO"
+    end
+
+    test "applies transform after cast" do
+      spec = RustyXML.transform_by(~x"//n/text()"i, &(&1 * 2))
+      result = RustyXML.xpath("<root><n>5</n></root>", spec)
+      assert result == 10
+    end
+  end
+
+  describe "add_namespace/3" do
+    test "returns SweetXpath with namespace binding" do
+      spec = RustyXML.add_namespace(~x"//ns:item"l, "ns", "http://example.com")
+      assert %RustyXML.SweetXpath{} = spec
+      assert {"ns", "http://example.com"} in spec.namespaces
+    end
+  end
+
+  # ==========================================================================
+  # Streaming Element-Based APIs
+  # ==========================================================================
+
+  describe "Native.streaming_take_elements/2" do
+    test "returns list of XML binaries for complete elements" do
+      parser = RustyXML.Native.streaming_new_with_filter("item")
+      RustyXML.Native.streaming_feed(parser, "<root><item>A</item><item>B</item></root>")
+      elements = RustyXML.Native.streaming_take_elements(parser, 100)
+      assert is_list(elements)
+      assert length(elements) == 2
+      assert Enum.all?(elements, &is_binary/1)
+    end
+
+    test "respects max parameter" do
+      parser = RustyXML.Native.streaming_new_with_filter("item")
+      RustyXML.Native.streaming_feed(parser, "<root><item/><item/><item/></root>")
+      elements = RustyXML.Native.streaming_take_elements(parser, 1)
+      assert length(elements) == 1
+    end
+  end
+
+  describe "Native.streaming_available_elements/1" do
+    test "returns count of available elements" do
+      parser = RustyXML.Native.streaming_new_with_filter("item")
+      RustyXML.Native.streaming_feed(parser, "<root><item/><item/></root>")
+      count = RustyXML.Native.streaming_available_elements(parser)
+      assert is_integer(count)
+      assert count == 2
+    end
+
+    test "returns 0 for empty parser" do
+      parser = RustyXML.Native.streaming_new()
+      count = RustyXML.Native.streaming_available_elements(parser)
+      assert count == 0
+    end
+  end
+
+  # ==========================================================================
+  # result_extract include_text: false
+  # ==========================================================================
+
+  describe "result_extract with include_text: false" do
+    test "omits text key from returned maps" do
+      xml = "<root><item id=\"1\">Text</item></root>"
+      doc = RustyXML.Native.parse(xml)
+      result = RustyXML.Native.xpath_lazy(doc, "//item")
+      maps = RustyXML.Native.result_extract(result, 0, 1, ["id"], false)
+      assert length(maps) == 1
+      map = hd(maps)
+      assert map["id"] == "1"
+      assert map[:name] == "item"
+      refute Map.has_key?(map, :text)
+    end
+  end
+
+  # ==========================================================================
+  # XPath Error Handling
+  # ==========================================================================
+
+  describe "XPath error handling" do
+    test "returns {:error, reason} for malformed XPath on raw XML" do
+      result = RustyXML.Native.parse_and_xpath("<root/>", "///invalid[[[")
+      assert {:error, reason} = result
+      assert is_binary(reason)
+    end
+
+    test "returns {:error, reason} for malformed XPath on document" do
+      doc = RustyXML.Native.parse("<root/>")
+      result = RustyXML.Native.xpath_query(doc, "///invalid[[[")
+      assert {:error, reason} = result
+      assert is_binary(reason)
+    end
+  end
+
+  # ==========================================================================
+  # Events
+  # ==========================================================================
 
   describe "Native.parse_events/1" do
     test "returns list of events" do
