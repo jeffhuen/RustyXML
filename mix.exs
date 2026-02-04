@@ -30,11 +30,10 @@ defmodule RustyXML.MixProject do
 
   defp description do
     """
-    Ultra-fast XML parser and XPath 1.0 engine for Elixir, built from scratch as a
-    Rust NIF with SIMD-accelerated zero-copy structural index. 100% W3C/OASIS XML
-    Conformance (1089/1089 tests). 8-72x faster parsing, 89-100x less memory than
-    SweetXml/xmerl. Drop-in replacement for both SweetXml and Saxy — one dependency
-    replaces two with the ~x sigil, SAX handler callbacks, streaming, and XML encoding.
+    Ultra-fast XML parser and XPath 1.0 engine for Elixir — a Rust NIF with
+    SIMD-accelerated zero-copy structural index. 100% W3C/OASIS conformance
+    (1089/1089). 8-72x faster, 89-100x less memory than SweetXml. Drop-in
+    replacement for SweetXml and Saxy with sigils, SAX, streaming, and encoding.
     """
   end
 

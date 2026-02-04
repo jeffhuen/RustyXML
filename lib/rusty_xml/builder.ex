@@ -21,7 +21,8 @@ defprotocol RustyXML.Builder do
   @doc """
   Convert a term to an XML element structure suitable for `RustyXML.encode!/1`.
   """
-  @spec build(term()) :: RustyXML.XML.element() | String.t() | [RustyXML.XML.element() | String.t()]
+  @spec build(term()) ::
+          RustyXML.XML.element() | String.t() | [RustyXML.XML.element() | String.t()]
   def build(term)
 end
 
