@@ -3,6 +3,8 @@
 //! Converts Rust XML structures to Elixir terms.
 
 use crate::dom::{DocumentAccess, NodeId, NodeKind};
+use crate::index::element::text_flags;
+use crate::index::StructuralIndex;
 use crate::strategy::streaming::OwnedXmlEvent;
 use crate::xpath::XPathValue;
 use rustler::{Encoder, Env, NewBinary, Term};
@@ -17,6 +19,7 @@ rustler::atoms! {
     empty_element,
     text,
     cdata,
+    characters,
     processing_instruction,
 }
 
@@ -52,23 +55,18 @@ pub fn xpath_value_to_term<'a, D: DocumentAccess>(
 
 /// Convert a node to an Elixir term (simplified representation)
 pub fn node_to_term<'a, D: DocumentAccess>(env: Env<'a>, doc: &D, node_id: NodeId) -> Term<'a> {
-    let node = match doc.get_node(node_id) {
-        Some(n) => n,
-        None => return rustler::types::atom::nil().encode(env),
-    };
+    let kind = doc.node_kind_of(node_id);
 
-    match node.kind {
+    match kind {
         NodeKind::Element => {
             // Return as {:element, name, attrs, children}
             let name = doc.node_name(node_id).unwrap_or("");
             let name_term = str_to_binary(env, name);
 
-            // Get attributes as list of {name, value} tuples - build in reverse order
-            let attrs_slice = doc.attributes(node_id);
+            // Get attributes as list of {name, value} tuples
+            let attr_pairs = doc.get_attribute_values(node_id);
             let mut attrs = Term::list_new_empty(env);
-            for attr in attrs_slice.iter().rev() {
-                let attr_name = doc.strings().get_str(attr.name_id).unwrap_or("");
-                let attr_value = doc.strings().get_str(attr.value_id).unwrap_or("");
+            for (attr_name, attr_value) in attr_pairs.into_iter().rev() {
                 let attr_tuple = (
                     str_to_binary(env, attr_name),
                     str_to_binary(env, attr_value),
@@ -76,14 +74,12 @@ pub fn node_to_term<'a, D: DocumentAccess>(env: Env<'a>, doc: &D, node_id: NodeI
                 attrs = attrs.list_prepend(attr_tuple.encode(env));
             }
 
-            // Build children directly by traversing last_child->prev_sibling chain
-            // This avoids allocating an intermediate Vec
+            // Build children list
+            let children_vec = doc.children_vec(node_id);
             let mut children = Term::list_new_empty(env);
-            let mut child_id = node.last_child;
-            while let Some(cid) = child_id {
+            for cid in children_vec.into_iter().rev() {
                 let child_term = node_to_term(env, doc, cid);
                 children = children.list_prepend(child_term);
-                child_id = doc.get_node(cid).and_then(|n| n.prev_sibling);
             }
 
             (element(), name_term, attrs, children).encode(env)
@@ -108,7 +104,6 @@ pub fn node_to_term<'a, D: DocumentAccess>(env: Env<'a>, doc: &D, node_id: NodeI
                 rustler::types::atom::nil().encode(env)
             }
         }
-        NodeKind::Attribute => rustler::types::atom::nil().encode(env),
     }
 }
 
@@ -221,21 +216,16 @@ fn serialize_node_to_xml<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String 
                 }
             }
             StackEntry::Enter(current_id) => {
-                let node = match doc.get_node(current_id) {
-                    Some(n) => n,
-                    None => continue,
-                };
+                let kind = doc.node_kind_of(current_id);
 
-                match node.kind {
+                match kind {
                     NodeKind::Element => {
                         let name = doc.node_name(current_id).unwrap_or("");
                         buf.push('<');
                         buf.push_str(name);
 
                         // Add attributes
-                        for attr in doc.attributes(current_id) {
-                            let attr_name = doc.strings().get_str(attr.name_id).unwrap_or("");
-                            let attr_value = doc.strings().get_str(attr.value_id).unwrap_or("");
+                        for (attr_name, attr_value) in doc.get_attribute_values(current_id) {
                             buf.push(' ');
                             buf.push_str(attr_name);
                             buf.push_str("=\"");
@@ -243,7 +233,8 @@ fn serialize_node_to_xml<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String 
                             buf.push('"');
                         }
 
-                        if node.first_child.is_none() {
+                        let children = doc.children_vec(current_id);
+                        if children.is_empty() {
                             buf.push_str("/>");
                         } else {
                             buf.push('>');
@@ -251,12 +242,9 @@ fn serialize_node_to_xml<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String 
                             // Push closing tag first (processed after children)
                             stack.push(StackEntry::Close(current_id));
 
-                            // Push children in reverse order using last_child->prev_sibling
-                            // This avoids allocating a Vec for children
-                            let mut child_id = node.last_child;
-                            while let Some(cid) = child_id {
+                            // Push children in reverse order
+                            for cid in children.into_iter().rev() {
                                 stack.push(StackEntry::Enter(cid));
-                                child_id = doc.get_node(cid).and_then(|n| n.prev_sibling);
                             }
                         }
                     }
@@ -287,13 +275,133 @@ fn serialize_node_to_xml<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String 
                             stack.push(StackEntry::Enter(root_id));
                         }
                     }
-                    NodeKind::Attribute => {}
                 }
             }
         }
     }
 
     buf
+}
+
+/// Build SimpleForm 3-tuple tree from StructuralIndex
+///
+/// Produces `{name, attrs, children}` tuples directly — no `:element` atom.
+/// Text/CData children have entities decoded. Comments and PIs are skipped.
+/// Uses iterative stack-based approach to avoid stack overflow on deep XML.
+pub fn node_to_simple_form_term<'a>(
+    env: Env<'a>,
+    index: &StructuralIndex,
+    input: &[u8],
+    root_idx: u32,
+) -> Term<'a> {
+    enum Work<'b> {
+        /// Enter an element: build name/attrs, push children + Close
+        Enter(u32),
+        /// Emit a pre-built text term onto the output stack
+        Leaf(Term<'b>),
+        /// Close an element: pop child_count terms, build tuple, push result
+        Close {
+            name_term: Term<'b>,
+            attrs_term: Term<'b>,
+            child_count: usize,
+        },
+    }
+
+    let mut output: Vec<Term<'a>> = Vec::with_capacity(256);
+    let mut stack: Vec<Work<'a>> = Vec::with_capacity(64);
+
+    stack.push(Work::Enter(root_idx));
+
+    while let Some(item) = stack.pop() {
+        match item {
+            Work::Leaf(term) => {
+                output.push(term);
+            }
+            Work::Enter(elem_idx) => {
+                let elem = match index.get_element(elem_idx) {
+                    Some(e) => e,
+                    None => continue,
+                };
+
+                // Build name binary
+                let name_term = bytes_to_binary(env, elem.name.slice(input));
+
+                // Build attributes list
+                let attrs = index.element_attributes(elem_idx);
+                let mut attr_list = Term::list_new_empty(env);
+                for a in attrs.iter().rev() {
+                    let attr_name = bytes_to_binary(env, a.name.slice(input));
+                    let raw_val = a.value.slice(input);
+                    let decoded = crate::core::entities::decode_text(raw_val);
+                    let attr_val = match decoded {
+                        std::borrow::Cow::Borrowed(b) => bytes_to_binary(env, b),
+                        std::borrow::Cow::Owned(ref bytes) => bytes_to_binary(env, bytes),
+                    };
+                    attr_list = attr_list.list_prepend((attr_name, attr_val).encode(env));
+                }
+
+                // Collect visible children (skip comments and PIs)
+                let mut child_items: Vec<Work<'a>> = Vec::new();
+                for child_ref in index.children(elem_idx) {
+                    if child_ref.is_text() {
+                        let text = &index.texts[child_ref.index() as usize];
+                        if text.flags & text_flags::IS_COMMENT != 0
+                            || text.flags & text_flags::IS_PI != 0
+                        {
+                            continue;
+                        }
+                        let raw = text.span.slice(input);
+                        let term = if text.needs_decode() {
+                            let decoded = crate::core::entities::decode_text(raw);
+                            match decoded {
+                                std::borrow::Cow::Borrowed(b) => bytes_to_binary(env, b),
+                                std::borrow::Cow::Owned(ref bytes) => bytes_to_binary(env, bytes),
+                            }
+                        } else {
+                            bytes_to_binary(env, raw)
+                        };
+                        child_items.push(Work::Leaf(term));
+                    } else {
+                        child_items.push(Work::Enter(child_ref.index()));
+                    }
+                }
+
+                let child_count = child_items.len();
+
+                // Push Close first (processed after all children complete)
+                stack.push(Work::Close {
+                    name_term,
+                    attrs_term: attr_list,
+                    child_count,
+                });
+
+                // Push children in reverse so first child is processed first
+                for item in child_items.into_iter().rev() {
+                    stack.push(item);
+                }
+            }
+            Work::Close {
+                name_term,
+                attrs_term,
+                child_count,
+            } => {
+                // Pop child_count completed terms from output
+                let children_start = output.len() - child_count;
+                let mut children_list = Term::list_new_empty(env);
+                for i in (children_start..output.len()).rev() {
+                    children_list = children_list.list_prepend(output[i]);
+                }
+                output.truncate(children_start);
+
+                let tuple = (name_term, attrs_term, children_list).encode(env);
+                output.push(tuple);
+            }
+        }
+    }
+
+    output
+        .pop()
+        .unwrap_or_else(|| rustler::types::atom::nil().encode(env))
 }
 
 /// Escape XML special characters to buffer

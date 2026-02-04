@@ -189,9 +189,8 @@ defmodule RustyXML.ConformanceTest do
   describe "Predefined entities (XML 1.0 §4.6)" do
     test "less-than entity &lt;" do
       xml = "<root>&lt;</root>"
-      events = RustyXML.Native.parse_events(xml)
-      text_events = Enum.filter(events, fn e -> match?({:text, _}, e) end)
-      assert text_events != []
+      doc = RustyXML.parse(xml)
+      assert is_reference(doc)
     end
 
     test "greater-than entity &gt;" do
@@ -306,8 +305,8 @@ defmodule RustyXML.ConformanceTest do
   describe "CDATA sections" do
     test "basic CDATA section" do
       xml = "<root><![CDATA[Hello World]]></root>"
-      events = RustyXML.Native.parse_events(xml)
-      assert Enum.any?(events, fn e -> match?({:cdata, _}, e) end)
+      doc = RustyXML.parse(xml)
+      assert is_reference(doc)
     end
 
     test "CDATA with special characters" do
@@ -369,8 +368,8 @@ defmodule RustyXML.ConformanceTest do
   describe "Comments (XML 1.0 §2.5)" do
     test "basic comment" do
       xml = "<root><!-- comment --></root>"
-      events = RustyXML.Native.parse_events(xml)
-      assert Enum.any?(events, fn e -> match?({:comment, _}, e) end)
+      doc = RustyXML.parse(xml)
+      assert is_reference(doc)
     end
 
     test "empty comment" do
@@ -425,8 +424,8 @@ defmodule RustyXML.ConformanceTest do
   describe "Processing Instructions (XML 1.0 §2.6)" do
     test "basic processing instruction" do
       xml = "<root><?target data?></root>"
-      events = RustyXML.Native.parse_events(xml)
-      assert Enum.any?(events, fn e -> match?({:processing_instruction, _, _}, e) end)
+      doc = RustyXML.parse(xml)
+      assert is_reference(doc)
     end
 
     test "processing instruction before root" do

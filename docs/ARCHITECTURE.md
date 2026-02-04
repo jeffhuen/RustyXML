@@ -1,6 +1,6 @@
 # RustyXML Architecture
 
-A purpose-built Rust NIF for ultra-fast XML parsing in Elixir. Not a wrapper around an existing library—custom-built from the ground up for optimal BEAM integration with full XPath 1.0 support.
+A purpose-built Rust NIF for ultra-fast XML parsing in Elixir. Not a wrapper around an existing library—custom-built from the ground up for optimal BEAM integration with full XPath 1.0 support. Drop-in replacement for both SweetXml and Saxy.
 
 ## Key Innovations
 
@@ -8,38 +8,38 @@ A purpose-built Rust NIF for ultra-fast XML parsing in Elixir. Not a wrapper aro
 
 Unlike projects that wrap existing Rust crates (like quick-xml or roxmltree), RustyXML is **designed specifically for Elixir**:
 
-- **Direct BEAM term construction** - Results go straight to Erlang terms, no intermediate serialization
-- **ResourceArc integration** - DOM documents and streaming parser state managed by BEAM's garbage collector
-- **Dirty scheduler awareness** - All raw-XML parse NIFs and parallel XPath run on dirty CPU schedulers
-- **Zero-copy where possible** - `Cow<[u8]>` borrows data, only allocates for entity decoding
-- **Arena-based DOM** - Cache-friendly node storage with `u32` NodeId indices
+- **Direct BEAM term construction** — Results go straight to Erlang terms, no intermediate serialization
+- **ResourceArc integration** — Documents and streaming parser state managed by BEAM's garbage collector
+- **Dirty scheduler awareness** — All raw-XML parse NIFs run on dirty CPU schedulers
+- **Zero-copy where possible** — Span-based references into original input, only allocates for entity decoding
+- **Structural index** — Cache-friendly storage with compact span structs and flat arrays
 
-### Six Parsing Strategies
+### Unified Architecture
 
-RustyXML offers unmatched flexibility with six parsing strategies:
+RustyXML v0.2.0 consolidated multiple parsing strategies into a single optimized path: the **structural index**. A single `UnifiedScanner` tokenizes input once, dispatching to a `ScanHandler` trait that builds the appropriate representation:
 
-| Strategy | Innovation |
-|----------|------------|
-| Event Parser | SIMD-accelerated tokenization via `memchr` crate |
-| DOM Parser | Arena allocation with string interning for memory efficiency |
-| Streaming Parser | Stateful parser with bounded memory for multi-GB files |
-| XPath Query | Full XPath 1.0 with all 13 axes and 27+ functions |
-| **Lazy XPath** | Keep results in Rust memory, access on-demand (3x faster) |
-| Parallel XPath | Multi-threaded query evaluation via `rayon` on dirty schedulers |
+| Path | Description | Best For |
+|------|-------------|----------|
+| `parse/1` + `xpath/2` | Structural index with XPath | General XML processing |
+| `stream_tags/3` | Bounded-memory streaming | Large files (GB+) |
+| `sax_parse/1` | SAX event collection | Event-driven processing |
+
+All three paths share the same SIMD-accelerated scanner and well-formedness validation.
 
 ### Memory Efficiency
 
-- **Arena-based DOM** - Nodes stored contiguously with `u32` indices instead of pointers
-- **String interning** - Repeated tag/attribute names stored once
-- **Streaming bounded memory** - Process 10GB+ files with configurable buffer size
-- **mimalloc allocator** - High-performance allocator for reduced fragmentation
-- **Optional memory tracking** - Opt-in profiling with zero overhead when disabled
+- **Structural index** — Elements stored as compact span structs (32 bytes each) referencing the original input
+- **Zero-copy strings** — Tag names, attribute values, and text stored as `(offset, length)` spans
+- **Sub-binary returns** — BEAM sub-binaries share memory with the original input
+- **Streaming bounded memory** — Process 10GB+ files with configurable buffer size
+- **mimalloc allocator** — High-performance allocator for reduced fragmentation
+- **Optional memory tracking** — Opt-in profiling with zero overhead when disabled
 
 ### Validated Correctness
 
-- **100% W3C/OASIS XML Conformance** — All 1089 applicable tests pass (218 valid + 871 not-well-formed rejections), verified individually against the official [xmlconf](https://www.w3.org/XML/Test/) suite. This is a from-scratch parser, not a wrapper — every well-formedness constraint in XML 1.0 was implemented and tested.
+- **100% W3C/OASIS XML Conformance** — All 1089 applicable tests pass (218 valid + 871 not-well-formed rejections), verified individually against the official [xmlconf](https://www.w3.org/XML/Test/) suite
 - **1296+ tests** including the full conformance suite, batch accessor clamping, and lazy XPath coverage
-- **Cross-strategy validation** — All strategies produce consistent output
+- **Cross-path validation** — All paths produce consistent output
 - **SweetXml compatibility** — Verified identical behavior for common API patterns
 
 ---
@@ -71,203 +71,76 @@ RustyXML.xmap(xml, [
 
 ---
 
-## Parsing Strategies
+## Core Architecture
 
-### Strategy A: Event Parser (`parse_events/1`)
+### UnifiedScanner and ScanHandler
 
-Zero-copy event-based parsing using SIMD-accelerated tokenization.
-
-```elixir
-RustyXML.Native.parse_events("<root><item/></root>")
-#=> [{:start_element, "root", []}, {:empty_element, "item", []}, {:end_element, "root"}]
-```
-
-**Best for:** Event-driven processing, when you don't need a full DOM
-
-**Events:**
-- `{:start_element, name, attributes}` - Opening tag
-- `{:end_element, name}` - Closing tag
-- `{:empty_element, name, attributes}` - Self-closing tag
-- `{:text, content}` - Text content
-- `{:cdata, content}` - CDATA section
-- `{:comment, content}` - XML comment
-- `{:processing_instruction, target, data}` - Processing instruction
-
-### Strategy B: DOM Parser (`parse/1`)
-
-Arena-based DOM construction with string interning for efficient memory usage.
-
-```elixir
-doc = RustyXML.parse("<root><item id=\"1\"/></root>")
-RustyXML.xpath(doc, ~x"//item/@id"s)
-#=> "1"
-```
-
-**Best for:** Multiple XPath queries on the same document
-
-**Architecture:**
-- Arena allocation stores nodes contiguously for cache-friendly access
-- `NodeId` (u32) indices instead of pointers reduce memory and improve cache performance
-- String pool interns repeated tag/attribute names
-- Document wrapped in `ResourceArc` for automatic memory management
-
-### Strategy C: Direct XPath (`xpath/2` with raw XML)
-
-Parse and query in a single call when only one query is needed.
-
-```elixir
-RustyXML.xpath("<root><item/></root>", ~x"//item"l)
-```
-
-**Best for:** Single-query scenarios, avoids persistent document reference
-
-### Strategy D: Streaming Parser (`stream_tags/3`)
-
-SweetXml-compatible streaming interface for processing large files with bounded memory.
-
-```elixir
-# High-level API (recommended)
-"large_file.xml"
-|> RustyXML.stream_tags(:item)
-|> Stream.each(fn {:item, item_xml} ->
-  # Each item_xml is a complete XML string
-  name = RustyXML.xpath(item_xml, ~x"./name/text()"s)
-  IO.puts("Processing: #{name}")
-end)
-|> Stream.run()
-
-# Works with Stream.take (no hanging like SweetXml issue #97)
-"large_file.xml"
-|> RustyXML.stream_tags(:item)
-|> Stream.take(10)
-|> Enum.to_list()
-
-# Low-level API (for custom streaming)
-parser = RustyXML.Native.streaming_new_with_filter("item")
-RustyXML.Native.streaming_feed(parser, chunk1)
-RustyXML.Native.streaming_feed(parser, chunk2)
-events = RustyXML.Native.streaming_take_events(parser, 100)
-remaining = RustyXML.Native.streaming_finalize(parser)
-```
-
-**Best for:** Large files (GB+), network streams, memory-constrained environments
-
-**Features:**
-- Returns `{tag_atom, xml_string}` tuples compatible with SweetXml
-- Complete XML elements that can be queried with `xpath/2`
-- Maintains parse state across chunks
-- Handles elements split across chunk boundaries
-- Tag filtering emits only matching elements and their children
-- Preserves all content including whitespace
-- Wrapped in `ResourceArc` for BEAM garbage collection
-- Does NOT hang with `Stream.take` (fixes SweetXml issue #97)
-
-### Strategy E: Lazy XPath (`xpath_lazy/2`)
-
-Keep XPath results in Rust memory, access on-demand without building BEAM terms upfront.
-
-```elixir
-doc = RustyXML.parse(large_xml)
-
-# Execute query - returns reference, not data (instant)
-result = RustyXML.Native.xpath_lazy(doc, "//item")
-
-# Access count without building terms (3x faster than regular XPath)
-count = RustyXML.Native.result_count(result)
-#=> 1000
-
-# Access individual items on-demand
-first_text = RustyXML.Native.result_text(result, 0)
-first_id = RustyXML.Native.result_attr(result, 0, "id")
-
-# Batch accessors for multiple items (reduces NIF call overhead)
-texts = RustyXML.Native.result_texts(result, 0, 10)      # First 10 texts
-ids = RustyXML.Native.result_attrs(result, "id", 0, 10) # First 10 @id values
-
-# Extract multiple fields at once
-data = RustyXML.Native.result_extract(result, 0, 10, ["id", "category"], true)
-#=> [%{:name => "item", :text => "...", "id" => "1", "category" => "cat1"}, ...]
-```
-
-**Best for:** Large result sets, partial access, count-only queries
-
-**Performance:**
-- 3x faster than regular XPath for count-only queries
-- Batch accessors 1.4x faster than individual calls
-- 5x faster for parse + query workflows
-
-**Implementation:**
-- `XPathResultResource` holds `Vec<NodeId>` in Rust memory
-- `DocumentRef` keeps document alive via reference counting
-- Binary keys for user-provided attributes (prevents atom table exhaustion)
-
-### Strategy F: Parallel XPath (`xpath_parallel/2`)
-
-Execute multiple XPath queries in parallel using Rayon thread pool.
-
-```elixir
-doc = RustyXML.parse(large_xml)
-results = RustyXML.Native.xpath_parallel(doc, ["//item", "//price", "//title"])
-#=> [items, prices, titles]
-```
-
-**Best for:** Batch queries, xmap with many keys
-
-**Implementation:**
-- Uses `DirtyCpu` scheduler to avoid blocking BEAM schedulers
-- Rayon provides work-stealing parallelism
-- Queries share the immutable DOM reference
-
----
-
-## Project Structure
+The `UnifiedScanner` is the single entry point for all XML tokenization. It uses `memchr`-based SIMD scanning to find delimiters, then dispatches events through the `ScanHandler` trait:
 
 ```
-native/rustyxml/src/
-├── lib.rs                 # NIF entry points, memory tracking, mimalloc
-├── core/
-│   ├── mod.rs            # Re-exports
-│   ├── scanner.rs        # SIMD byte scanning (memchr)
-│   ├── tokenizer.rs      # State machine tokenizer
-│   ├── entities.rs       # Entity decoding with Cow
-│   └── attributes.rs     # Attribute parsing
-├── reader/
-│   ├── mod.rs            # Reader exports
-│   ├── slice.rs          # Strategy A: Zero-copy slice parser
-│   ├── buffered.rs       # Buffer-based reader for streams
-│   └── events.rs         # XML event types
-├── dom/
-│   ├── mod.rs            # DOM exports
-│   ├── document.rs       # Arena-based document structure
-│   ├── node.rs           # Node types with NodeId (u32)
-│   ├── strings.rs        # String interning pool
-│   └── namespace.rs      # Namespace resolution stack
-├── xpath/
-│   ├── mod.rs            # XPath exports
-│   ├── lexer.rs          # XPath tokenizer
-│   ├── parser.rs         # Recursive descent parser
-│   ├── compiler.rs       # Expression compiler
-│   ├── eval.rs           # Evaluation engine
-│   ├── axes.rs           # All 13 XPath axes
-│   ├── functions.rs      # 27+ XPath 1.0 functions
-│   └── value.rs          # XPath value types
-├── strategy/
-│   ├── mod.rs            # Strategy exports
-│   ├── streaming.rs      # Strategy D: Stateful streaming parser
-│   └── parallel.rs       # Strategy E: Parallel XPath (DirtyCpu)
-├── term.rs               # BEAM term building utilities
-└── resource.rs           # ResourceArc wrappers
-
-lib/
-├── rusty_xml.ex          # Main module with xpath/2, xmap/2, stream_tags/3, sigil
-├── rusty_xml/
-│   ├── native.ex         # NIF bindings (RustlerPrecompiled)
-│   └── streaming.ex      # High-level streaming interface (stream_tags/3)
+XML Input
+   |
+   v
+UnifiedScanner (memchr SIMD tokenization)
+   |
+   +---> IndexBuilder (ScanHandler) ---> StructuralIndex ---> XPath
+   |
+   +---> SaxCollector (ScanHandler) ---> SAX Events
+   |
+   +---> StreamingParser ---> Complete Elements
 ```
 
----
+The `ScanHandler` trait:
 
-## Implementation Details
+```rust
+trait ScanHandler {
+    fn start_element(&mut self, name: Span, attrs: &[(Span, Span)], is_empty: bool);
+    fn end_element(&mut self, name: Span);
+    fn text(&mut self, span: Span, needs_entity_decode: bool);
+    fn cdata(&mut self, span: Span);
+    fn comment(&mut self, span: Span);
+    fn processing_instruction(&mut self, target: Span, data: Option<Span>);
+}
+```
+
+Adding a new processing mode requires only implementing the trait—no changes to the scanner.
+
+### Structural Index
+
+The structural index is the core document representation. Instead of building a DOM tree with string copies, it stores compact structs that reference byte offsets into the original input:
+
+```rust
+struct Span {
+    offset: u32,
+    len: u16,     // 6 bytes total
+}
+
+struct IndexElement {      // 32 bytes
+    name: Span,
+    ns_prefix: Option<Span>,
+    parent: u32,
+    children: Range<u32>,  // into flat children_data array
+    attrs: Range<u32>,     // into flat attrs array
+}
+
+struct IndexText {         // 16 bytes
+    span: Span,
+    parent: u32,
+    needs_entity_decode: bool,
+}
+
+struct IndexAttribute {    // 12 bytes
+    name: Span,
+    value: Span,
+}
+```
+
+**Memory profile for 2.93 MB document:**
+- Structural index: **12.8 MB** (4.4x input size)
+- Old DOM approach: **30.2 MB** (10.3x input size)
+- SweetXml/xmerl: allocated entirely on BEAM heap
+
+The `IndexedDocumentView` implements the `DocumentAccess` trait, allowing the XPath engine to evaluate queries on the structural index without any conversion step.
 
 ### SIMD-Accelerated Scanning
 
@@ -276,15 +149,9 @@ Tag and content boundary detection uses `memchr` for hardware-accelerated scanni
 ```rust
 use memchr::{memchr, memchr2, memchr3};
 
-// Find next tag start - SIMD accelerated
+// Find next tag start — SIMD accelerated
 fn find_tag_start(input: &[u8], pos: usize) -> Option<usize> {
     memchr(b'<', &input[pos..]).map(|i| pos + i)
-}
-
-// Find tag end with quote handling - parallel search
-fn find_tag_end(input: &[u8], pos: usize) -> Option<usize> {
-    // memchr2 finds '>' or '"' in parallel using SIMD
-    // State machine handles quote contexts
 }
 
 // Content scanning for entities and markup
@@ -295,59 +162,117 @@ fn find_content_break(input: &[u8], pos: usize) -> Option<usize> {
 
 **SIMD support:** SSE2 (x86_64 default), AVX2 (runtime detect), NEON (aarch64), simd128 (wasm)
 
-### State Machine Tokenizer
+---
 
-The tokenizer uses an efficient state machine for XML parsing:
+## Parsing
 
-```rust
-enum ParseState {
-    Init,           // Before first content
-    InsideText,     // Between tags, collecting text
-    InsideMarkup,   // Inside <...>
-    InsideRef,      // Inside &...;
-    Done,           // EOF reached
-}
+### Standard Parse (`parse/1`)
 
-enum TokenKind {
-    StartTag,       // <element
-    EndTag,         // </element>
-    EmptyTag,       // <element/>
-    Text,           // Character data
-    CData,          // <![CDATA[...]]>
-    Comment,        // <!--...-->
-    ProcessingInstruction, // <?target data?>
-    Declaration,    // <?xml version="1.0"?>
-    Doctype,        // <!DOCTYPE ...>
-    Eof,
-}
+All parsing flows through the structural index:
+
+```elixir
+doc = RustyXML.parse("<root><item id=\"1\"/></root>")
+RustyXML.xpath(doc, ~x"//item/@id"s)
+#=> "1"
 ```
 
-### Arena-Based DOM
+**Best for:** Multiple XPath queries on the same document.
 
-The DOM uses arena allocation for cache-friendly traversal:
+**Architecture:**
+- `UnifiedScanner` tokenizes input with SIMD-accelerated scanning
+- `IndexBuilder` collects spans into a `StructuralIndex`
+- Document wrapped in `ResourceArc` for BEAM garbage collection
+- XPath queries operate on the structural index via `DocumentAccess` trait
 
-- **NodeId** (`u32`) indices instead of 64-bit pointers for cache efficiency and 50% memory savings
-- **XmlDocument** holds the node arena, attribute arena, string pool, and root element reference
-- **XmlNode** contains kind, parent/child/sibling links, name/namespace IDs, attribute range, and text span
-- **StringPool** interns repeated tag/attribute names
-- Text content accessed via spans into original input (zero-copy when possible)
+### Direct XPath (`xpath/2` with raw XML)
 
-### Zero-Copy with Cow
+Parse and query in a single call:
 
-Entity decoding uses `Cow<[u8]>` for optimal allocation:
-
-```rust
-pub fn decode_text(input: &[u8]) -> Cow<'_, [u8]> {
-    // Fast path: SIMD check for '&'
-    if memchr(b'&', input).is_none() {
-        return Cow::Borrowed(input);  // Zero-copy!
-    }
-    // Slow path: decode entities
-    Cow::Owned(decode_entities(input))
-}
+```elixir
+RustyXML.xpath("<root><item/></root>", ~x"//item"l)
 ```
 
-### XPath 1.0 Engine
+**Best for:** Single-query scenarios, avoids persistent document reference.
+
+### Streaming Parser (`stream_tags/3`)
+
+Bounded-memory streaming for large files:
+
+```elixir
+# High-level API
+"large_file.xml"
+|> RustyXML.stream_tags(:item)
+|> Stream.each(fn {:item, item_xml} ->
+  name = RustyXML.xpath(item_xml, ~x"./name/text()"s)
+  IO.puts("Processing: #{name}")
+end)
+|> Stream.run()
+
+# Works with Stream.take (no hanging like SweetXml issue #97)
+"large_file.xml"
+|> RustyXML.stream_tags(:item)
+|> Stream.take(10)
+|> Enum.to_list()
+```
+
+**Best for:** Large files (GB+), network streams, memory-constrained environments.
+
+**Features:**
+- Returns `{tag_atom, xml_string}` tuples compatible with SweetXml
+- Complete XML elements that can be queried with `xpath/2`
+- Handles elements split across chunk boundaries
+- Tag filtering emits only matching elements and their children
+- Does NOT hang with `Stream.take` (fixes SweetXml issue #97)
+
+### SAX Parser (`sax_parse/1`)
+
+Event-based parsing for custom processing:
+
+```elixir
+events = RustyXML.Native.sax_parse(xml)
+# Returns list of SAX events: start_element, end_element, text, etc.
+```
+
+**Best for:** Event-driven processing, custom document handling.
+
+### Lazy XPath (`xpath_lazy/2`)
+
+Keep XPath results in Rust memory, access on-demand:
+
+```elixir
+doc = RustyXML.parse(large_xml)
+
+# Execute query — returns reference, not data
+result = RustyXML.Native.xpath_lazy(doc, "//item")
+
+# Access count without building terms (3x faster than regular XPath)
+count = RustyXML.Native.result_count(result)
+
+# Batch accessors for multiple items
+texts = RustyXML.Native.result_texts(result, 0, 10)
+ids = RustyXML.Native.result_attrs(result, "id", 0, 10)
+
+# Extract multiple fields at once
+data = RustyXML.Native.result_extract(result, 0, 10, ["id", "category"], true)
+#=> [%{:name => "item", :text => "...", "id" => "1", "category" => "cat1"}, ...]
+```
+
+**Best for:** Large result sets, partial access, count-only queries.
+
+### Parallel XPath (`xpath_parallel/2`)
+
+Execute multiple XPath queries concurrently using Rayon:
+
+```elixir
+doc = RustyXML.parse(large_xml)
+results = RustyXML.Native.xpath_parallel(doc, ["//item", "//price", "//title"])
+```
+
+**Best for:** Batch queries, `xmap` with many keys.
+
+---
+
+## XPath 1.0 Engine
 
 Full XPath 1.0 implementation with recursive descent parsing:
 
@@ -356,58 +281,107 @@ Full XPath 1.0 implementation with recursive descent parsing:
 - **Predicates**: Full predicate support with position, boolean, and comparison expressions
 - **Operators**: Arithmetic (+, -, *, div, mod), comparison (=, !=, <, >, <=, >=), logical (and, or)
 
-### Streaming Parser State
+### Expression Caching
 
-The streaming parser maintains state across chunks:
+Compiled XPath expressions are cached in an LRU cache (256 entries). Repeated queries skip parsing and compilation entirely.
 
-- **Buffer** for accumulated input from partial elements
-- **Complete elements queue** for yielding finished XML strings
-- **Element builder** tracks in-progress element capture across chunk boundaries
-- **Tag filter** emits only matching elements and their children
-- **Depth tracking** knows when a target element is complete
-- Wrapped in `ResourceArc` for BEAM memory management
+### Fast-Path Predicates
+
+Common predicate patterns are optimized:
+
+- `[@attr='value']` → `PredicateAttrEq` (direct attribute lookup)
+- `[n]` → `PredicatePosition` (index access, no iteration)
+
+### Text Extraction Fast Path
+
+For text extraction queries, `xpath_text_list` extracts text directly from NodeSets without building recursive BEAM element tuples—eliminating the double-walk where tuples were built then discarded.
+
+---
+
+## Project Structure
+
+```
+native/rustyxml/src/
+├── lib.rs                 # NIF entry points, memory tracking, mimalloc
+├── core/
+│   ├── mod.rs             # Re-exports
+│   ├── scanner.rs         # SIMD byte scanning (memchr)
+│   ├── unified_scanner.rs # UnifiedScanner + ScanHandler trait
+│   ├── tokenizer.rs       # State machine tokenizer
+│   ├── entities.rs        # Entity decoding with Cow
+│   └── attributes.rs      # Attribute parsing
+├── index/
+│   ├── mod.rs             # Module docs, re-exports
+│   ├── structural.rs      # StructuralIndex (main data structure)
+│   ├── span.rs            # Span struct (offset, length)
+│   ├── element.rs         # IndexElement, IndexText, IndexAttribute
+│   ├── builder.rs         # IndexBuilder (ScanHandler impl)
+│   └── view.rs            # IndexedDocumentView (DocumentAccess impl)
+├── dom/
+│   ├── mod.rs             # DocumentAccess trait, validation
+│   ├── document.rs        # Document types
+│   ├── node.rs            # Node types
+│   └── strings.rs         # String utilities
+├── xpath/
+│   ├── mod.rs             # XPath exports
+│   ├── lexer.rs           # XPath tokenizer
+│   ├── parser.rs          # Recursive descent parser
+│   ├── compiler.rs        # Expression compiler
+│   ├── eval.rs            # Evaluation engine
+│   ├── axes.rs            # All 13 XPath axes
+│   ├── functions.rs       # 27+ XPath 1.0 functions
+│   └── value.rs           # XPath value types
+├── sax/
+│   ├── mod.rs             # SAX module docs
+│   ├── events.rs          # CompactSaxEvent types
+│   └── collector.rs       # SaxCollector (ScanHandler impl)
+├── strategy/
+│   ├── mod.rs             # Strategy exports
+│   ├── streaming.rs       # Stateful streaming parser
+│   └── parallel.rs        # Parallel XPath (DirtyCpu)
+├── term.rs                # BEAM term building utilities
+└── resource.rs            # ResourceArc wrappers
+
+lib/
+├── rusty_xml.ex           # Main module: xpath/2, xmap/2, stream_tags/3, parse_string/4,
+│                          #   parse_stream/4, stream_events/2, encode!/2, ~x sigil
+├── rusty_xml/
+│   ├── native.ex          # NIF bindings (RustlerPrecompiled)
+│   ├── streaming.ex       # High-level streaming interface
+│   ├── handler.ex         # SAX handler behaviour (= Saxy.Handler)
+│   ├── event_transformer.ex # Native event → Saxy event mapping
+│   ├── partial.ex         # Incremental SAX parsing (= Saxy.Partial)
+│   ├── simple_form.ex     # Tuple tree output (= Saxy.SimpleForm)
+│   ├── xml.ex             # Builder DSL (= Saxy.XML)
+│   ├── encoder.ex         # XML string encoding
+│   └── builder.ex         # Struct→XML protocol (= Saxy.Builder)
+```
 
 ---
 
 ## Performance Optimizations
 
-RustyXML achieves its speed through several key optimizations:
+| Optimization | Impact |
+|--------------|--------|
+| Structural index (zero-copy spans) | 65-70% memory reduction vs old DOM |
+| XPath text fast path | 0.74x → 1.44x faster text extraction |
+| XML string serialization | 1.39x faster element queries |
+| Complete elements streaming | 3.87x faster streaming |
+| Lazy XPath API | 3x faster for partial access |
+| XPath expression caching | Skip re-parsing repeated queries |
+| Fast-path predicates | 23% faster for `[@attr='value']` |
+| Compile-time atoms | Eliminates per-call atom lookup |
+| Direct binary encoding | Faster string-to-term conversion |
+| DocumentAccess trait | O(1) pre-parsed access |
+| HashSet deduplication | O(n^2) → O(n) for node sets |
 
 ### Bypassing BEAM Term Construction
 
-For element queries, building nested Elixir tuples (`{:element, name, attrs, children}`) is expensive—1000 elements with 5 children = 6000 recursive term constructions.
+For element queries, building nested Elixir tuples (`{:element, name, attrs, children}`) is expensive. `xpath_query_raw/2` bypasses this by serializing nodes to XML strings in Rust using an iterative approach with an explicit stack.
 
-`xpath_query_raw/2` bypasses this entirely by serializing nodes to XML strings in Rust. The serialization uses an iterative approach with an explicit stack (not recursion) to safely handle arbitrarily deep XML without stack overflow.
+### Lazy XPath
 
-**Result:** 1.39x faster than SweetXml for element queries.
-
-### Complete Elements Streaming
-
-The streaming parser returns complete XML elements directly from Rust rather than individual events. This eliminates the need for Elixir-side event reconstruction.
-
-**Result:** 3.87x faster streaming than SweetXml.
-
-### Compile-Time Atoms
-
-Atom lookup is expensive at runtime. We use `rustler::atoms!` to pre-define atoms (`:element`, `:text`, etc.) at compile time, eliminating per-call overhead.
-
-### Direct Binary Encoding
-
-Strings are encoded using `NewBinary` for direct memory copy instead of going through Rustler's encoder machinery.
-
-### O(1) Document Access
-
-The `DocumentAccess` trait allows XPath evaluation on pre-parsed documents without re-parsing. `XmlDocumentView` borrows from `OwnedXmlDocument` with just pointer assignments.
-
-### O(n) Node Set Operations
-
-XPath union/intersection operations use `HashSet` for O(n) deduplication instead of naive O(n²) contains-checks.
-
-### Lazy XPath API
-
-The regular XPath API builds BEAM terms for all results upfront. For large result sets where you only need a count or a subset, this is wasteful.
-
-The lazy API keeps results in Rust memory as `Vec<NodeId>`:
+The regular XPath API builds BEAM terms for all results upfront. The lazy API keeps results in Rust memory as `Vec<NodeId>`:
 
 ```elixir
 # Regular API: builds 1000 BEAM tuples immediately
@@ -418,38 +392,18 @@ result = RustyXML.Native.xpath_lazy(doc, "//item")  # 31ms
 count = RustyXML.Native.result_count(result)  # instant
 ```
 
-**Result:** 3x faster for queries where you don't need all results as BEAM terms.
+### Zero-Copy with Cow
 
-### XPath Expression Caching
-
-Compiled XPath expressions are cached in an LRU cache (256 entries):
+Entity decoding uses `Cow<[u8]>` for optimal allocation:
 
 ```rust
-static XPATH_CACHE: Mutex<Option<LruCache<String, CompiledExpr>>> = Mutex::new(None);
+pub fn decode_text(input: &[u8]) -> Cow<'_, [u8]> {
+    if memchr(b'&', input).is_none() {
+        return Cow::Borrowed(input);  // Zero-copy!
+    }
+    Cow::Owned(decode_entities(input))
+}
 ```
-
-Repeated queries skip parsing and compilation entirely.
-
-### Fast-Path Predicates
-
-Common predicate patterns are optimized:
-
-- `[@attr='value']` → `PredicateAttrEq` (direct attribute lookup)
-- `[n]` → `PredicatePosition` (index access, no iteration)
-
-### Summary
-
-| Optimization | Impact |
-|--------------|--------|
-| XML string serialization | 1.39x faster element queries |
-| Complete elements streaming | 3.87x faster streaming |
-| **Lazy XPath API** | **3x faster for partial access** |
-| **XPath expression caching** | **Skip re-parsing repeated queries** |
-| **Fast-path predicates** | **23% faster for [@attr='value']** |
-| Compile-time atoms | Eliminates per-call atom lookup |
-| Direct binary encoding | Faster string→term conversion |
-| DocumentAccess trait | O(1) pre-parsed access |
-| HashSet deduplication | O(n²) → O(n) for node sets |
 
 ---
 
@@ -466,8 +420,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 ```
 
 **Benefits:**
-- 10-20% faster allocation for many small objects (nodes, strings)
-- Reduced fragmentation in arena patterns
+- 10-20% faster allocation for many small objects
+- Reduced fragmentation
 - No tracking overhead in default configuration
 
 ### Optional Memory Tracking
@@ -480,25 +434,14 @@ For profiling, enable the `memory_tracking` feature:
 default = ["mimalloc", "memory_tracking"]
 ```
 
-When enabled, these functions return actual values:
-- `RustyXML.Native.get_rust_memory/0` - Current allocation
-- `RustyXML.Native.get_rust_memory_peak/0` - Peak allocation
-- `RustyXML.Native.reset_rust_memory_stats/0` - Reset and get stats
+When enabled:
+- `RustyXML.Native.get_rust_memory/0` — Current allocation
+- `RustyXML.Native.get_rust_memory_peak/0` — Peak allocation
+- `RustyXML.Native.reset_rust_memory_stats/0` — Reset and get stats
 
 ### Pre-allocated Vectors
 
-All parsing paths pre-allocate vectors with capacity estimates:
-
-```rust
-// Nodes: estimate 1 node per 50 bytes
-let nodes = Vec::with_capacity(input.len() / 50);
-
-// Strings: estimate 20 unique names
-let strings = StringPool::with_capacity(20);
-
-// Events: estimate based on document structure
-let events = Vec::with_capacity(estimated_events);
-```
+All parsing paths pre-allocate vectors with capacity estimates based on input size, reducing reallocation overhead during parsing.
 
 ---
 
@@ -510,63 +453,42 @@ NIFs should complete in under 1ms to avoid blocking schedulers.
 
 | Approach | Used By | Description |
 |----------|---------|-------------|
-| Dirty Schedulers | `parse`, `parse_strict`, `parse_events`, `parse_and_xpath`, `xpath_with_subspecs`, `xpath_string_value`, `xpath_parallel` | Runs on separate dirty CPU scheduler |
+| Dirty Schedulers | `parse`, `parse_strict`, `parse_and_xpath`, `xpath_with_subspecs`, `xpath_string_value`, `sax_parse` | Runs on dirty CPU scheduler |
 | Chunked Processing | `streaming_*` | Returns control between chunks |
 | Stateful Resource | `streaming_*` | Lets Elixir control iteration |
-| Fast SIMD | all strategies | Completes quickly via hardware acceleration |
+| Fast SIMD | all paths | Completes quickly via hardware acceleration |
 
 ### Memory Safety
 
-- DOM documents wrapped in `ResourceArc` with automatic cleanup
+- Documents wrapped in `ResourceArc` with automatic cleanup
 - Streaming parsers use `Mutex<StreamingParser>` for thread safety
-- String pool uses safe indices with bounds checking
 - All allocations tracked when memory_tracking enabled
 
 ### Panic Safety
 
 RustyXML is designed to never crash the BEAM VM:
 
-- **No `.unwrap()` in NIF code paths** - All fallible operations use proper error handling
-- **Pre-defined atoms** - Common atoms (`ok`, `error`, `nil`, `text`, `name`) created at compile time
-- **Graceful mutex handling** - Poisoned mutexes return `{:error, :mutex_poisoned}` tuples instead of panicking
-- **Graceful map operations** - Failed map operations preserve existing state
-
-```rust
-// Before (could panic and crash VM)
-let error_atom = Atom::from_str(env, "error").unwrap();
-let inner = parser.inner.lock().unwrap();
-
-// After (panic-safe, surfaces error to Elixir)
-atoms::error()  // Pre-defined at compile time
-match parser.inner.lock() {
-    Ok(inner) => { /* normal operation */ }
-    Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-}
-```
+- **No `.unwrap()` in NIF code paths** — All fallible operations use proper error handling
+- **Pre-defined atoms** — Common atoms (`ok`, `error`, `nil`, `text`, `name`) created at compile time
+- **Graceful mutex handling** — Poisoned mutexes return `{:error, :mutex_poisoned}` tuples
 
 ### Atom Table Safety
 
-BEAM's atom table has a fixed limit (~1M atoms) and atoms are never garbage collected. Dynamic atom creation from user input can exhaust the table and crash the VM.
-
-RustyXML uses **binary keys** for user-provided values:
+BEAM's atom table has a fixed limit (~1M atoms) and atoms are never garbage collected. RustyXML uses **binary keys** for user-provided values:
 
 ```elixir
 # Safe: predefined atom keys + binary attribute keys
 %{:name => "item", :text => "...", "id" => "1", "category" => "cat1"}
-#  ^^^^^           ^^^^^          ^^^^          ^^^^^^^^^^
-#  atom (safe)     atom (safe)    binary (safe) binary (safe)
 ```
 
 | Key Type | Implementation | Safe? |
 |----------|----------------|-------|
-| `:name`, `:text`, `:error` | Pre-defined atoms | ✅ Fixed set |
-| User attribute names | Binary strings | ✅ No atom table impact |
+| `:name`, `:text`, `:error` | Pre-defined atoms | Fixed set |
+| User attribute names | Binary strings | No atom table impact |
 
 ---
 
 ## The `~x` Sigil
-
-The sigil creates XPath expressions with modifiers:
 
 | Modifier | Effect | Example |
 |----------|--------|---------|
@@ -582,9 +504,11 @@ Modifiers can be combined: `~x"//items"slo` (string, list, optional)
 
 ---
 
-## SweetXml Compatibility
+## API Compatibility
 
-RustyXML provides a SweetXml-compatible API:
+RustyXML is a drop-in replacement for both SweetXml and Saxy. Both APIs coexist with no conflicts (different arities and function names).
+
+### SweetXml-Compatible
 
 | Function | Description | Status |
 |----------|-------------|--------|
@@ -593,16 +517,29 @@ RustyXML provides a SweetXml-compatible API:
 | `~x` sigil | XPath with modifiers | Complete |
 | `stream_tags/2,3` | Stream specific tags | Complete |
 
-### Migration from SweetXml
+### Saxy-Compatible
+
+| Function / Module | Description | Status |
+|-------------------|-------------|--------|
+| `parse_string/4` | SAX parsing with handler | Complete |
+| `parse_stream/4` | Streaming SAX with handler | Complete |
+| `stream_events/2` | Lazy stream of SAX events | Complete |
+| `encode!/2` | XML encoding | Complete |
+| `RustyXML.Handler` | Handler behaviour (= `Saxy.Handler`) | Complete |
+| `RustyXML.Partial` | Incremental parsing (= `Saxy.Partial`) | Complete |
+| `RustyXML.SimpleForm` | Tuple tree (= `Saxy.SimpleForm`) | Complete |
+| `RustyXML.XML` | Builder DSL (= `Saxy.XML`) | Complete |
+| `RustyXML.Builder` | Struct→XML protocol (= `Saxy.Builder`) | Complete |
+
+### Migration
 
 ```elixir
-# Before
-import SweetXml
-doc |> xpath(~x"//item"l)
+# From SweetXml — just change the import
+import RustyXML  # was: import SweetXml
 
-# After
-import RustyXML
-doc |> xpath(~x"//item"l)
+# From Saxy — just change the module name
+RustyXML.parse_string(xml, MyHandler, [])  # was: Saxy.parse_string(...)
+RustyXML.SimpleForm.parse_string(xml)      # was: Saxy.SimpleForm.parse_string(...)
 ```
 
 ---
@@ -611,36 +548,35 @@ doc |> xpath(~x"//item"l)
 
 See [BENCHMARK.md](BENCHMARK.md) for detailed performance comparisons.
 
-**Summary:**
-- **DOM parsing**: 10-50x faster than SweetXml/xmerl
-- **XPath queries**: 5-20x faster than SweetXml
-- **Streaming**: Bounded memory for GB+ files
-- **Parallel XPath**: Near-linear scaling with query count
+**vs SweetXml:**
+- **Parsing**: 8-72x faster
+- **XPath queries**: 1.5-3.7x faster
+- **Streaming**: 16x faster with 228x less memory
+- **Memory**: 89-100x less for parsing
+
+**vs Saxy:**
+- **SAX parsing**: 1.3-1.7x faster
+- **SimpleForm**: 1.4-1.5x faster
+- **SAX memory**: 2-8x less
 
 ---
 
 ## Compliance & Validation
 
-RustyXML is validated against industry-standard test suites:
+See [COMPLIANCE.md](COMPLIANCE.md) for full details.
 
-- **W3C/OASIS Conformance Suite** - 100% compliance (1089/1089 tests pass)
-  - 218/218 valid document tests ✅
-  - 871/871 not-well-formed tests correctly rejected ✅
-- **W3C XML 1.0 (Fifth Edition)** - Full strict mode validation
-- **XPath 1.0 Specification** - Full axis and function support (13 axes, 27+ functions)
-
-RustyXML defaults to **strict mode** for SweetXml compatibility, with **lenient mode** available for processing third-party XML that may have minor issues.
-
-See [COMPLIANCE.md](COMPLIANCE.md) for full details including test suite instructions.
+- **W3C/OASIS Conformance Suite** — 100% compliance (1089/1089 tests pass)
+- **W3C XML 1.0 (Fifth Edition)** — Full strict mode validation
+- **XPath 1.0 Specification** — Full axis and function support (13 axes, 27+ functions)
 
 ---
 
 ## References
 
-- [W3C XML 1.0 (Fifth Edition)](https://www.w3.org/TR/xml/) - XML specification
-- [XPath 1.0](https://www.w3.org/TR/xpath-10/) - XPath specification
-- [OASIS XML Conformance](https://www.oasis-open.org/committees/xml-conformance/) - Test suite
-- [memchr crate](https://docs.rs/memchr/latest/memchr/) - SIMD byte searching
-- [rayon crate](https://docs.rs/rayon/latest/rayon/) - Parallel iteration
-- [mimalloc](https://github.com/microsoft/mimalloc) - High-performance allocator
-- [SweetXml](https://github.com/kbrw/sweet_xml) - Elixir XML library (compatibility target)
+- [W3C XML 1.0 (Fifth Edition)](https://www.w3.org/TR/xml/) — XML specification
+- [XPath 1.0](https://www.w3.org/TR/xpath-10/) — XPath specification
+- [OASIS XML Conformance](https://www.oasis-open.org/committees/xml-conformance/) — Test suite
+- [memchr crate](https://docs.rs/memchr/latest/memchr/) — SIMD byte searching
+- [rayon crate](https://docs.rs/rayon/latest/rayon/) — Parallel iteration
+- [mimalloc](https://github.com/microsoft/mimalloc) — High-performance allocator
+- [SweetXml](https://github.com/kbrw/sweet_xml) — Elixir XML library (compatibility target)

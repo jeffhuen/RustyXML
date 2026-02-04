@@ -8,6 +8,7 @@
 //! - Encoding: UTF-16 detection and conversion to UTF-8
 //! - Unicode: XML 1.0 Unicode character class validation
 //! - DTD: DTD declaration store and post-parse validation
+//! - UnifiedScanner: ScanHandler-based scanner for Index/SAX modes
 
 pub mod attributes;
 pub mod dtd;
@@ -16,3 +17,4 @@ pub mod entities;
 pub mod scanner;
 pub mod tokenizer;
 pub mod unicode;
+pub mod unified_scanner;

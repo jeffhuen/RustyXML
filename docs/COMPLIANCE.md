@@ -1,6 +1,6 @@
 # RustyXML Compliance & Validation
 
-RustyXML takes correctness seriously. With **1275+ tests** across multiple test suites, including the complete W3C/OASIS XML Conformance Test Suite, RustyXML achieves **100% compliance** with the industry-standard XML validation tests.
+RustyXML takes correctness seriously. With **1296+ tests** across multiple test suites, including the complete W3C/OASIS XML Conformance Test Suite, RustyXML achieves **100% compliance** with the industry-standard XML validation tests.
 
 This document describes W3C XML 1.0 compliance, XPath 1.0 support, and the validation methodology.
 
@@ -378,26 +378,22 @@ doc |> xpath(~x"//item"l)
 
 ---
 
-## Cross-Strategy Validation
+## Cross-Path Validation
 
-All parsing strategies must produce consistent output for the same input.
+All parsing paths produce consistent output for the same input.
 
-| Strategy | Description | Validates Against |
-|----------|-------------|-------------------|
-| Event Parser | SIMD-accelerated events | All test suites |
-| DOM Parser | Arena-based document | All test suites |
-| Streaming | Bounded-memory chunks | All test suites |
+| Path | Description | Validates Against |
+|------|-------------|-------------------|
+| Structural Index (`parse/1`) | Main parse path (~4x input memory) | All test suites |
+| Streaming (`stream_tags/3`) | Bounded-memory chunks | All test suites |
+| SAX (`sax_parse/1`) | Event-based processing | All test suites |
 
 ```elixir
-# Strategies are validated in test/rusty_xml_test.exs
-test "all strategies produce consistent output" do
+# Paths are validated in test/rusty_xml_test.exs
+test "parse produces consistent output" do
   xml = "<root><item>test</item></root>"
-
-  events = RustyXML.Native.parse_events(xml)
   doc = RustyXML.parse(xml)
-
-  # Verify consistency
-  assert ...
+  assert is_reference(doc)
 end
 ```
 
@@ -462,8 +458,8 @@ If you find XML that RustyXML doesn't handle correctly:
 | Suite | Tests | Purpose |
 |-------|-------|---------|
 | OASIS/W3C Conformance | 1089 | Industry-standard XML validation |
-| RustyXML Unit Tests | 186 | API, XPath, streaming, sigils |
-| **Total** | **1275** | |
+| RustyXML Unit Tests | 207+ | API, XPath, streaming, SAX, sigils |
+| **Total** | **1296+** | |
 
 ---
 

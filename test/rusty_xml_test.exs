@@ -33,6 +33,17 @@ defmodule RustyXMLTest do
       doc = RustyXML.parse("<root><!-- comment --></root>")
       assert is_reference(doc)
     end
+
+    test "accepts charlist input" do
+      doc = RustyXML.parse(~c"<root>hello</root>")
+      assert is_reference(doc)
+      assert RustyXML.xpath(doc, ~x"//root/text()"s) == "hello"
+    end
+
+    test "accepts iodata charlist input" do
+      doc = RustyXML.parse(~c"<root><item/></root>")
+      assert is_reference(doc)
+    end
   end
 
   describe "xpath/2 with raw XML" do
@@ -292,6 +303,30 @@ defmodule RustyXMLTest do
       assert Map.has_key?(result, :x)
       assert Map.has_key?(result, :y)
     end
+
+    test "returns keyword list when third arg is true" do
+      xml = "<root><a>1</a><b>2</b></root>"
+
+      result =
+        RustyXML.xmap(
+          xml,
+          [a: ~x"//a/text()"s, b: ~x"//b/text()"s],
+          true
+        )
+
+      assert is_list(result)
+      assert Keyword.keyword?(result)
+      assert Keyword.get(result, :a) == "1"
+      assert Keyword.get(result, :b) == "2"
+    end
+
+    test "returns map when third arg is false (default)" do
+      xml = "<root><a>1</a></root>"
+
+      result = RustyXML.xmap(xml, a: ~x"//a/text()"s)
+      assert is_map(result)
+      assert result.a == "1"
+    end
   end
 
   describe "root/1" do
@@ -306,144 +341,6 @@ defmodule RustyXMLTest do
       root = RustyXML.root(doc)
       assert is_tuple(root)
       assert elem(root, 0) == :element
-    end
-  end
-
-  # ==========================================================================
-  # Lazy XPath + Batch Accessor Clamping
-  # ==========================================================================
-
-  describe "Native.xpath_lazy/2 and result accessors" do
-    setup do
-      xml = "<root><item id=\"1\">A</item><item id=\"2\">B</item><item id=\"3\">C</item></root>"
-      doc = RustyXML.Native.parse(xml)
-      result = RustyXML.Native.xpath_lazy(doc, "//item")
-      %{result: result}
-    end
-
-    test "result_count returns correct count", %{result: result} do
-      assert RustyXML.Native.result_count(result) == 3
-    end
-
-    test "result_text returns text for valid index", %{result: result} do
-      assert RustyXML.Native.result_text(result, 0) == "A"
-      assert RustyXML.Native.result_text(result, 2) == "C"
-    end
-
-    test "result_text returns nil for out-of-range index", %{result: result} do
-      assert RustyXML.Native.result_text(result, 99) == nil
-    end
-
-    test "result_attr returns attribute value", %{result: result} do
-      assert RustyXML.Native.result_attr(result, 0, "id") == "1"
-      assert RustyXML.Native.result_attr(result, 2, "id") == "3"
-    end
-
-    test "result_name returns element name", %{result: result} do
-      assert RustyXML.Native.result_name(result, 0) == "item"
-    end
-
-    test "result_node returns full element", %{result: result} do
-      node = RustyXML.Native.result_node(result, 0)
-      assert {:element, "item", _attrs, _children} = node
-    end
-  end
-
-  describe "batch accessor clamping" do
-    # Compute usize::MAX portably — :wordsize returns bytes (4 or 8)
-    @usize_max Bitwise.bsl(1, :erlang.system_info(:wordsize) * 8) - 1
-
-    setup do
-      xml = "<r><i id=\"a\">X</i><i id=\"b\">Y</i><i id=\"c\">Z</i></r>"
-      doc = RustyXML.Native.parse(xml)
-      result = RustyXML.Native.xpath_lazy(doc, "//i")
-      %{result: result}
-    end
-
-    # -- result_texts/3 --
-
-    test "result_texts returns all items for exact range", %{result: result} do
-      texts = RustyXML.Native.result_texts(result, 0, 3)
-      assert texts == ["X", "Y", "Z"]
-    end
-
-    test "result_texts clamps when count exceeds results", %{result: result} do
-      texts = RustyXML.Native.result_texts(result, 0, 1_000_000)
-      assert texts == ["X", "Y", "Z"]
-    end
-
-    test "result_texts returns subset from offset", %{result: result} do
-      texts = RustyXML.Native.result_texts(result, 1, 100)
-      assert texts == ["Y", "Z"]
-    end
-
-    test "result_texts returns empty when start beyond range", %{result: result} do
-      texts = RustyXML.Native.result_texts(result, 99, 10)
-      assert texts == []
-    end
-
-    test "result_texts handles usize_max count without hanging", %{result: result} do
-      # This would previously iterate billions of times; now clamps to 3
-      texts = RustyXML.Native.result_texts(result, 0, @usize_max)
-      assert texts == ["X", "Y", "Z"]
-    end
-
-    # -- result_attrs/4 --
-
-    test "result_attrs returns all attrs for exact range", %{result: result} do
-      ids = RustyXML.Native.result_attrs(result, "id", 0, 3)
-      assert ids == ["a", "b", "c"]
-    end
-
-    test "result_attrs clamps when count exceeds results", %{result: result} do
-      ids = RustyXML.Native.result_attrs(result, "id", 0, 1_000_000)
-      assert ids == ["a", "b", "c"]
-    end
-
-    test "result_attrs returns subset from offset", %{result: result} do
-      ids = RustyXML.Native.result_attrs(result, "id", 2, 100)
-      assert ids == ["c"]
-    end
-
-    test "result_attrs returns empty when start beyond range", %{result: result} do
-      ids = RustyXML.Native.result_attrs(result, "id", 99, 10)
-      assert ids == []
-    end
-
-    test "result_attrs handles usize_max count without hanging", %{result: result} do
-      ids = RustyXML.Native.result_attrs(result, "id", 0, @usize_max)
-      assert ids == ["a", "b", "c"]
-    end
-
-    # -- result_extract/5 --
-
-    test "result_extract returns all maps for exact range", %{result: result} do
-      maps = RustyXML.Native.result_extract(result, 0, 3, ["id"], true)
-      assert length(maps) == 3
-      assert Enum.at(maps, 0)[:name] == "i"
-      assert Enum.at(maps, 0)[:text] == "X"
-      assert Enum.at(maps, 0)["id"] == "a"
-    end
-
-    test "result_extract clamps when count exceeds results", %{result: result} do
-      maps = RustyXML.Native.result_extract(result, 0, 1_000_000, ["id"], false)
-      assert length(maps) == 3
-    end
-
-    test "result_extract returns subset from offset", %{result: result} do
-      maps = RustyXML.Native.result_extract(result, 2, 100, ["id"], false)
-      assert length(maps) == 1
-      assert Enum.at(maps, 0)["id"] == "c"
-    end
-
-    test "result_extract returns empty when start beyond range", %{result: result} do
-      maps = RustyXML.Native.result_extract(result, 99, 10, ["id"], false)
-      assert maps == []
-    end
-
-    test "result_extract handles usize_max count without hanging", %{result: result} do
-      maps = RustyXML.Native.result_extract(result, 0, @usize_max, ["id"], true)
-      assert length(maps) == 3
     end
   end
 
@@ -481,6 +378,15 @@ defmodule RustyXMLTest do
       assert {:error, reason} = RustyXML.parse_document("<1bad/>")
       assert is_binary(reason)
     end
+
+    test "accepts charlist input" do
+      assert {:ok, doc} = RustyXML.parse_document(~c"<root>ok</root>")
+      assert is_reference(doc)
+    end
+
+    test "rejects malformed charlist input" do
+      assert {:error, _reason} = RustyXML.parse_document(~c"<1invalid/>")
+    end
   end
 
   describe "parse/2 error cases" do
@@ -490,11 +396,13 @@ defmodule RustyXMLTest do
       end
     end
 
+    @tag :lenient_parsing
     test "accepts malformed XML in lenient mode" do
       doc = RustyXML.parse("<1invalid/>", lenient: true)
       assert is_reference(doc)
     end
 
+    @tag :lenient_parsing
     test "handles empty input" do
       doc = RustyXML.parse("", lenient: true)
       assert is_reference(doc)
@@ -555,52 +463,11 @@ defmodule RustyXMLTest do
   end
 
   # ==========================================================================
-  # Parallel XPath
-  # ==========================================================================
-
-  describe "Native.xpath_parallel/2" do
-    test "evaluates multiple queries in parallel" do
-      doc = RustyXML.Native.parse("<root><a>1</a><b>2</b><c>3</c></root>")
-      results = RustyXML.Native.xpath_parallel(doc, ["//a", "//b", "//c"])
-      assert is_list(results)
-      assert length(results) == 3
-    end
-
-    test "returns results in same order as queries" do
-      doc = RustyXML.Native.parse("<root><x/><y/></root>")
-      results = RustyXML.Native.xpath_parallel(doc, ["count(//x)", "count(//y)"])
-      assert results == [1.0, 1.0]
-    end
-
-    test "handles errors in individual queries" do
-      doc = RustyXML.Native.parse("<root><a/></root>")
-      results = RustyXML.Native.xpath_parallel(doc, ["//a", "!!!invalid"])
-
-      assert is_list(results)
-      assert length(results) == 2
-    end
-  end
-
-  describe "xmap_parallel/2" do
-    test "returns map of parallel query results" do
-      doc = RustyXML.parse("<root><a>1</a><b>2</b></root>")
-
-      result =
-        RustyXML.xmap_parallel(doc,
-          a: ~x"//a/text()"s,
-          b: ~x"//b/text()"s
-        )
-
-      assert result == %{a: "1", b: "2"}
-    end
-  end
-
-  # ==========================================================================
   # xpath/3 with Subspecs
   # ==========================================================================
 
   describe "xpath/3 with subspecs" do
-    test "extracts nested values from matching nodes" do
+    test "extracts nested values from raw XML" do
       xml = """
       <items>
         <item id="1"><name>A</name></item>
@@ -613,6 +480,43 @@ defmodule RustyXMLTest do
 
       assert is_list(result)
       assert length(result) == 2
+    end
+
+    test "extracts nested values from document ref" do
+      xml = """
+      <items>
+        <item id="1"><name>A</name></item>
+        <item id="2"><name>B</name></item>
+      </items>
+      """
+
+      doc = RustyXML.parse(xml)
+
+      result =
+        RustyXML.xpath(doc, ~x"//item"l, id: ~x"./@id"s, name: ~x"./name/text()"s)
+
+      assert is_list(result)
+      assert length(result) == 2
+
+      # Each entry should be a map with atom keys
+      [first | _] = result
+      assert is_map(first)
+      assert Map.has_key?(first, :id)
+      assert Map.has_key?(first, :name)
+      assert first.id == "1"
+      assert first.name == "A"
+    end
+
+    test "works with single result (no l modifier)" do
+      xml = "<items><item id=\"1\"><name>A</name></item></items>"
+      doc = RustyXML.parse(xml)
+
+      result =
+        RustyXML.xpath(doc, ~x"//item", id: ~x"./@id"s, name: ~x"./name/text()"s)
+
+      assert is_map(result)
+      assert result.id == "1"
+      assert result.name == "A"
     end
   end
 
@@ -724,24 +628,6 @@ defmodule RustyXMLTest do
   end
 
   # ==========================================================================
-  # result_extract include_text: false
-  # ==========================================================================
-
-  describe "result_extract with include_text: false" do
-    test "omits text key from returned maps" do
-      xml = "<root><item id=\"1\">Text</item></root>"
-      doc = RustyXML.Native.parse(xml)
-      result = RustyXML.Native.xpath_lazy(doc, "//item")
-      maps = RustyXML.Native.result_extract(result, 0, 1, ["id"], false)
-      assert length(maps) == 1
-      map = hd(maps)
-      assert map["id"] == "1"
-      assert map[:name] == "item"
-      refute Map.has_key?(map, :text)
-    end
-  end
-
-  # ==========================================================================
   # XPath Error Handling
   # ==========================================================================
 
@@ -757,47 +643,6 @@ defmodule RustyXMLTest do
       result = RustyXML.Native.xpath_query(doc, "///invalid[[[")
       assert {:error, reason} = result
       assert is_binary(reason)
-    end
-  end
-
-  # ==========================================================================
-  # Events
-  # ==========================================================================
-
-  describe "Native.parse_events/1" do
-    test "returns list of events" do
-      events = RustyXML.Native.parse_events("<root>text</root>")
-      assert is_list(events)
-      assert length(events) >= 3
-    end
-
-    test "includes start, text, and end events" do
-      events = RustyXML.Native.parse_events("<r>t</r>")
-
-      assert Enum.any?(events, fn e -> match?({:start_element, _, _}, e) end)
-      assert Enum.any?(events, fn e -> match?({:text, _}, e) end)
-      assert Enum.any?(events, fn e -> match?({:end_element, _}, e) end)
-    end
-
-    test "handles empty elements" do
-      events = RustyXML.Native.parse_events("<br/>")
-      assert Enum.any?(events, fn e -> match?({:empty_element, _, _}, e) end)
-    end
-
-    test "handles attributes" do
-      events = RustyXML.Native.parse_events(~s(<div id="x"/>))
-      [{:empty_element, "div", attrs}] = events
-      assert is_list(attrs)
-    end
-
-    test "handles CDATA" do
-      events = RustyXML.Native.parse_events("<x><![CDATA[data]]></x>")
-      assert Enum.any?(events, fn e -> match?({:cdata, _}, e) end)
-    end
-
-    test "handles comments" do
-      events = RustyXML.Native.parse_events("<x><!-- comment --></x>")
-      assert Enum.any?(events, fn e -> match?({:comment, _}, e) end)
     end
   end
 end

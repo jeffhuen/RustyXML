@@ -20,12 +20,11 @@ pub enum NodeKind {
     Comment,
     /// Processing instruction
     ProcessingInstruction,
-    /// Attribute (stored separately but can be queried)
-    Attribute,
 }
 
-/// An XML node in the arena
+/// An XML node in the arena (used by DocumentAccess trait + XPath tests)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct XmlNode {
     /// Type of this node
     pub kind: NodeKind,
@@ -39,9 +38,7 @@ pub struct XmlNode {
     pub prev_sibling: Option<NodeId>,
     /// Next sibling
     pub next_sibling: Option<NodeId>,
-    /// Span in original input (start, end)
-    pub span: (usize, usize),
-    /// Index into string pool for name (elements, PIs) or 0 for text nodes
+    /// Index into string pool for name (elements, PIs) or text content (text nodes)
     pub name_id: u32,
     /// Index into string pool for namespace prefix, or 0
     pub prefix_id: u32,
@@ -55,6 +52,7 @@ pub struct XmlNode {
     pub depth: u16,
 }
 
+#[allow(dead_code)]
 impl XmlNode {
     /// Create a new document root node
     pub fn document() -> Self {
@@ -65,7 +63,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span: (0, 0),
             name_id: 0,
             prefix_id: 0,
             namespace_id: 0,
@@ -84,7 +81,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span: (0, 0),
             name_id,
             prefix_id: 0,
             namespace_id: 0,
@@ -95,7 +91,7 @@ impl XmlNode {
     }
 
     /// Create a new text node
-    pub fn text(span: (usize, usize), parent: Option<NodeId>, depth: u16) -> Self {
+    pub fn text(parent: Option<NodeId>, depth: u16) -> Self {
         XmlNode {
             kind: NodeKind::Text,
             parent,
@@ -103,7 +99,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span,
             name_id: 0,
             prefix_id: 0,
             namespace_id: 0,
@@ -114,7 +109,7 @@ impl XmlNode {
     }
 
     /// Create a new comment node
-    pub fn comment(span: (usize, usize), parent: Option<NodeId>, depth: u16) -> Self {
+    pub fn comment(parent: Option<NodeId>, depth: u16) -> Self {
         XmlNode {
             kind: NodeKind::Comment,
             parent,
@@ -122,7 +117,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span,
             name_id: 0,
             prefix_id: 0,
             namespace_id: 0,
@@ -133,7 +127,7 @@ impl XmlNode {
     }
 
     /// Create a new CDATA node
-    pub fn cdata(span: (usize, usize), parent: Option<NodeId>, depth: u16) -> Self {
+    pub fn cdata(parent: Option<NodeId>, depth: u16) -> Self {
         XmlNode {
             kind: NodeKind::CData,
             parent,
@@ -141,7 +135,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span,
             name_id: 0,
             prefix_id: 0,
             namespace_id: 0,
@@ -152,12 +145,7 @@ impl XmlNode {
     }
 
     /// Create a processing instruction node
-    pub fn processing_instruction(
-        name_id: u32,
-        span: (usize, usize),
-        parent: Option<NodeId>,
-        depth: u16,
-    ) -> Self {
+    pub fn processing_instruction(name_id: u32, parent: Option<NodeId>, depth: u16) -> Self {
         XmlNode {
             kind: NodeKind::ProcessingInstruction,
             parent,
@@ -165,7 +153,6 @@ impl XmlNode {
             last_child: None,
             prev_sibling: None,
             next_sibling: None,
-            span,
             name_id,
             prefix_id: 0,
             namespace_id: 0,
@@ -200,8 +187,9 @@ impl XmlNode {
     }
 }
 
-/// Stored attribute
+/// Stored attribute (used by DocumentAccess trait + XPath tests)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct XmlAttribute {
     /// Index into string pool for attribute name
     pub name_id: u32,
@@ -209,20 +197,15 @@ pub struct XmlAttribute {
     pub prefix_id: u32,
     /// Index into string pool for attribute value
     pub value_id: u32,
-    /// Span of attribute value in input (start, end)
-    pub value_span: (usize, usize),
-    /// True if value contains entities that need decoding
-    pub has_entities: bool,
 }
 
+#[allow(dead_code)]
 impl XmlAttribute {
-    pub fn new(name_id: u32, value_id: u32, value_span: (usize, usize)) -> Self {
+    pub fn new(name_id: u32, value_id: u32) -> Self {
         XmlAttribute {
             name_id,
             prefix_id: 0,
             value_id,
-            value_span,
-            has_entities: false,
         }
     }
 }

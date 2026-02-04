@@ -58,25 +58,18 @@ defmodule RustyXML.StreamingTest do
       assert length(all_events) >= 5
     end
 
-    test "filter only emits matching tags" do
+    test "filter returns matching elements via take_elements" do
       parser = RustyXML.Native.streaming_new_with_filter("item")
 
       RustyXML.Native.streaming_feed(parser, "<root><item/><other/><item/></root>")
-      events = RustyXML.Native.streaming_take_events(parser, 100)
-      final = RustyXML.Native.streaming_finalize(parser)
+      elements = RustyXML.Native.streaming_take_elements(parser, 100)
 
-      all_events = events ++ final
+      # Should have exactly 2 item elements
+      assert length(elements) == 2
+      assert Enum.all?(elements, &String.contains?(&1, "item"))
 
-      # Should only have item events (empty_element)
-      item_events =
-        Enum.filter(all_events, fn
-          {:empty_element, name, _} -> name == "item"
-          {:start_element, name, _} -> name == "item"
-          {:end_element, name} -> name == "item"
-          _ -> false
-        end)
-
-      assert length(item_events) >= 2
+      # elements_only mode: no events generated (avoids memory bloat)
+      assert RustyXML.Native.streaming_available_elements(parser) == 0
     end
   end
 

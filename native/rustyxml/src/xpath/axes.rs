@@ -44,19 +44,20 @@ fn descendant_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
 
 /// descendant-or-self:: axis - context node plus all descendants
 fn descendant_or_self_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
-    let mut result = vec![context];
-    result.extend(doc.descendants_vec(context));
+    let descendants = doc.descendants_vec(context);
+    let mut result = Vec::with_capacity(1 + descendants.len());
+    result.push(context);
+    result.extend(descendants);
     result
 }
 
 /// parent:: axis - parent node (at most one)
 fn parent_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
-    if let Some(node) = doc.get_node(context) {
-        if let Some(parent) = node.parent {
-            return vec![parent];
-        }
+    if let Some(parent) = doc.parent_of(context) {
+        vec![parent]
+    } else {
+        Vec::new()
     }
-    Vec::new()
 }
 
 /// ancestor:: axis - all ancestors (parent, grandparent, etc.)
@@ -64,13 +65,9 @@ fn ancestor_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
     let mut current = context;
 
-    while let Some(node) = doc.get_node(current) {
-        if let Some(parent) = node.parent {
-            result.push(parent);
-            current = parent;
-        } else {
-            break;
-        }
+    while let Some(parent) = doc.parent_of(current) {
+        result.push(parent);
+        current = parent;
     }
 
     result
@@ -87,16 +84,10 @@ fn ancestor_or_self_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<Nod
 fn following_sibling_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
 
-    if let Some(node) = doc.get_node(context) {
-        let mut sibling = node.next_sibling;
-        while let Some(sib_id) = sibling {
-            result.push(sib_id);
-            if let Some(sib_node) = doc.get_node(sib_id) {
-                sibling = sib_node.next_sibling;
-            } else {
-                break;
-            }
-        }
+    let mut sibling = doc.next_sibling_of(context);
+    while let Some(sib_id) = sibling {
+        result.push(sib_id);
+        sibling = doc.next_sibling_of(sib_id);
     }
 
     result
@@ -106,16 +97,10 @@ fn following_sibling_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<No
 fn preceding_sibling_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
 
-    if let Some(node) = doc.get_node(context) {
-        let mut sibling = node.prev_sibling;
-        while let Some(sib_id) = sibling {
-            result.push(sib_id);
-            if let Some(sib_node) = doc.get_node(sib_id) {
-                sibling = sib_node.prev_sibling;
-            } else {
-                break;
-            }
-        }
+    let mut sibling = doc.prev_sibling_of(context);
+    while let Some(sib_id) = sibling {
+        result.push(sib_id);
+        sibling = doc.prev_sibling_of(sib_id);
     }
 
     result
@@ -124,41 +109,25 @@ fn preceding_sibling_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<No
 /// following:: axis - all nodes after in document order (not ancestors)
 fn following_axis<D: DocumentAccess>(doc: &D, context: NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
-    let context_node = match doc.get_node(context) {
-        Some(n) => n.clone(),
-        None => return result,
-    };
 
     // Get all following siblings and their descendants
-    let mut sibling = context_node.next_sibling;
+    let mut sibling = doc.next_sibling_of(context);
     while let Some(sib_id) = sibling {
         result.push(sib_id);
         result.extend(doc.descendants_vec(sib_id));
-        if let Some(sib_node) = doc.get_node(sib_id) {
-            sibling = sib_node.next_sibling;
-        } else {
-            break;
-        }
+        sibling = doc.next_sibling_of(sib_id);
     }
 
     // Then do the same for ancestors' following siblings
-    let mut ancestor = context_node.parent;
+    let mut ancestor = doc.parent_of(context);
     while let Some(anc_id) = ancestor {
-        if let Some(anc_node) = doc.get_node(anc_id) {
-            let mut sibling = anc_node.next_sibling;
-            while let Some(sib_id) = sibling {
-                result.push(sib_id);
-                result.extend(doc.descendants_vec(sib_id));
-                if let Some(sib_node) = doc.get_node(sib_id) {
-                    sibling = sib_node.next_sibling;
-                } else {
-                    break;
-                }
-            }
-            ancestor = anc_node.parent;
-        } else {
-            break;
+        let mut sibling = doc.next_sibling_of(anc_id);
+        while let Some(sib_id) = sibling {
+            result.push(sib_id);
+            result.extend(doc.descendants_vec(sib_id));
+            sibling = doc.next_sibling_of(sib_id);
         }
+        ancestor = doc.parent_of(anc_id);
     }
 
     result
@@ -237,26 +206,23 @@ pub fn matches_node_test<D: DocumentAccess>(
     node_id: NodeId,
     node_test: &super::compiler::CompiledNodeTest,
 ) -> bool {
-    let node = match doc.get_node(node_id) {
-        Some(n) => n,
-        None => return false,
-    };
+    let kind = doc.node_kind_of(node_id);
 
     use super::compiler::CompiledNodeTest;
 
     match node_test {
         CompiledNodeTest::Any => {
             // * matches any element
-            node.kind == NodeKind::Element
+            kind == NodeKind::Element
         }
         CompiledNodeTest::Name(name) => {
-            if node.kind != NodeKind::Element {
+            if kind != NodeKind::Element {
                 return false;
             }
             doc.node_local_name(node_id) == Some(name.as_str())
         }
         CompiledNodeTest::QName(ns, local) => {
-            if node.kind != NodeKind::Element {
+            if kind != NodeKind::Element {
                 return false;
             }
             // TODO: check namespace
@@ -264,7 +230,7 @@ pub fn matches_node_test<D: DocumentAccess>(
             doc.node_local_name(node_id) == Some(local.as_str())
         }
         CompiledNodeTest::NamespaceWildcard(ns) => {
-            if node.kind != NodeKind::Element {
+            if kind != NodeKind::Element {
                 return false;
             }
             // TODO: check namespace prefix matches
@@ -275,10 +241,10 @@ pub fn matches_node_test<D: DocumentAccess>(
             // node() matches any node type
             true
         }
-        CompiledNodeTest::Text => node.kind == NodeKind::Text || node.kind == NodeKind::CData,
-        CompiledNodeTest::Comment => node.kind == NodeKind::Comment,
+        CompiledNodeTest::Text => kind == NodeKind::Text || kind == NodeKind::CData,
+        CompiledNodeTest::Comment => kind == NodeKind::Comment,
         CompiledNodeTest::ProcessingInstruction(target) => {
-            if node.kind != NodeKind::ProcessingInstruction {
+            if kind != NodeKind::ProcessingInstruction {
                 return false;
             }
             if let Some(expected_target) = target {

@@ -1,29 +1,30 @@
 # RustyXML
 
-**Ultra-fast XML parsing for Elixir.** A purpose-built Rust NIF with SIMD acceleration, arena-based DOM, and full XPath 1.0 support. Drop-in replacement for SweetXml.
+**Ultra-fast XML parsing for Elixir.** A purpose-built Rust NIF with SIMD-accelerated zero-copy structural index and full XPath 1.0 support. Drop-in replacement for both SweetXml and Saxy — one dependency replaces two.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_xml.svg)](https://hex.pm/packages/rusty_xml)
 
 ## Features
 
 - **100% W3C/OASIS XML Conformance** — 1089/1089 test cases pass ([details](#xml-conformance))
-- **SIMD-accelerated parsing** via memchr for fast delimiter detection
-- **Arena-based DOM** with NodeId indices for cache-friendly traversal
+- **8-72x faster parsing** than SweetXml/xmerl, with gains increasing on larger documents
+- **89-100x less memory** — structural index uses compact spans instead of string copies
+- **SIMD-accelerated scanning** via memchr for fast delimiter detection
+- **Zero-copy structural index** — compact span structs reference the original input
 - **Full XPath 1.0** with all 13 axes and 27+ functions
 - **SweetXml-compatible API** with `~x` sigil and modifiers
-- **Streaming support** for large files with bounded memory
-- **Parallel XPath** evaluation for batch queries
-- **Zero-copy parsing** where possible using Cow types
+- **Saxy-compatible API** — SAX handler callbacks, `SimpleForm`, `Partial`, XML encoding
+- **16x faster streaming** for large files with bounded memory (319 KB vs 73 MB)
 
 ## Installation
 
 ```elixir
 def deps do
-  [{:rusty_xml, "~> 0.1.1"}]
+  [{:rusty_xml, "~> 0.2.0"}]
 end
 ```
 
-Precompiled binaries are available for common platforms. For source compilation, Rust 1.70+ is required.
+Precompiled binaries are available for common platforms. For source compilation, Rust 1.91+ is required.
 
 ## Quick Start
 
@@ -73,17 +74,9 @@ import RustyXML
 ~x"//item"slo     # Combine modifiers
 ```
 
-## Parsing Strategies
+## Usage
 
-RustyXML provides multiple strategies for different use cases:
-
-| Strategy | Use Case | Memory Model |
-|----------|----------|--------------|
-| `parse/1` + `xpath/2` | Multiple queries | Cached DOM |
-| `xpath/2` (raw XML) | Single query | Temporary DOM |
-| `Native.xpath_lazy/2` | Large results, partial access | Lazy (3x faster) |
-| `stream_tags/3` | Large files | Bounded memory |
-| `xmap_parallel/2` | Multiple queries | Parallel evaluation |
+All parsing flows through a single optimized structural index. XPath and streaming are API features on top of that path, maintained for SweetXml compatibility.
 
 ```elixir
 # Parse once, query multiple times
@@ -99,6 +92,58 @@ RustyXML.xpath(doc, ~x"//price"l)
   IO.puts("Processing: #{name}")
 end)
 |> Stream.run()
+```
+
+## Saxy-Compatible API
+
+RustyXML is a drop-in replacement for [Saxy](https://hex.pm/packages/saxy). SAX handler callbacks, `SimpleForm`, `Partial` incremental parsing, and XML encoding all work with the same API.
+
+### SAX Parsing
+
+```elixir
+defmodule MyHandler do
+  @behaviour RustyXML.Handler
+
+  def handle_event(:start_element, {name, _attrs}, count), do: {:ok, count + 1}
+  def handle_event(_event, _data, count), do: {:ok, count}
+end
+
+# Parse a string
+{:ok, 4} = RustyXML.parse_string("<root><a/><b/><c/></root>", MyHandler, 0)
+
+# Parse a stream
+File.stream!("large.xml", [], 64 * 1024)
+|> RustyXML.parse_stream(MyHandler, 0)
+```
+
+### SimpleForm
+
+```elixir
+{:ok, {"root", [], [{"item", [{"id", "1"}], ["text"]}]}} =
+  RustyXML.SimpleForm.parse_string("<root><item id=\"1\">text</item></root>")
+```
+
+### Incremental Parsing
+
+```elixir
+{:ok, partial} = RustyXML.Partial.new(MyHandler, initial_state)
+{:cont, partial} = RustyXML.Partial.parse(partial, chunk1)
+{:cont, partial} = RustyXML.Partial.parse(partial, chunk2)
+{:ok, final_state} = RustyXML.Partial.terminate(partial)
+```
+
+### XML Encoding
+
+```elixir
+import RustyXML.XML
+
+doc = element("person", [{"id", "1"}], [
+  element("name", [], ["John Doe"]),
+  element("email", [], ["john@example.com"])
+])
+
+RustyXML.encode!(doc)
+#=> "<person id=\"1\"><name>John Doe</name><email>john@example.com</email></person>"
 ```
 
 ## XPath 1.0 Support
@@ -198,54 +243,56 @@ xml_string
 ### Low-Level Native Functions
 
 ```elixir
-# Event-based parsing
-RustyXML.Native.parse_events("<root>...</root>")
-#=> [{:start_element, "root", []}, ...]
-
-# Streaming parser
+# Streaming parser for large files
 parser = RustyXML.Native.streaming_new()
 RustyXML.Native.streaming_feed(parser, chunk)
 RustyXML.Native.streaming_take_events(parser, 100)
 
-# Lazy XPath (3x faster for large result sets)
-doc = RustyXML.parse(xml)
-result = RustyXML.Native.xpath_lazy(doc, "//item")
-count = RustyXML.Native.result_count(result)        # No BEAM term building
-texts = RustyXML.Native.result_texts(result, 0, 10) # Batch accessor
+# SAX-style event parsing
+RustyXML.Native.sax_parse(xml)
+#=> [{:start_element, "root", [], []}, ...]
 ```
 
 ## Architecture
 
+A single `UnifiedScanner` tokenizes input with SIMD acceleration, dispatching to a `ScanHandler` trait that builds the structural index, SAX events, or streaming elements.
+
 ```
 native/rustyxml/src/
-├── lib.rs              # NIF entry points
+├── lib.rs                 # NIF entry points
 ├── core/
-│   ├── scanner.rs      # SIMD byte scanning (memchr)
-│   ├── tokenizer.rs    # State machine tokenizer
-│   ├── entities.rs     # Entity decoding with Cow
-│   └── attributes.rs   # Attribute parsing
-├── reader/
-│   ├── slice.rs        # Zero-copy slice parser
-│   ├── buffered.rs     # Buffer-based reader
-│   └── events.rs       # XML event types
+│   ├── scanner.rs         # SIMD byte scanning (memchr)
+│   ├── unified_scanner.rs # UnifiedScanner + ScanHandler trait
+│   ├── tokenizer.rs       # State machine tokenizer
+│   ├── entities.rs        # Entity decoding with Cow
+│   └── attributes.rs      # Attribute parsing
+├── index/
+│   ├── structural.rs      # StructuralIndex (core data structure)
+│   ├── span.rs            # Span struct (offset, length)
+│   ├── element.rs         # IndexElement, IndexText, IndexAttribute
+│   ├── builder.rs         # IndexBuilder (ScanHandler impl)
+│   └── view.rs            # IndexedDocumentView (DocumentAccess impl)
 ├── dom/
-│   ├── document.rs     # Arena-based DOM
-│   ├── node.rs         # Node types with NodeId
-│   ├── strings.rs      # String interning pool
-│   └── namespace.rs    # Namespace resolver
+│   ├── document.rs        # Document types, validation
+│   ├── node.rs            # Node types
+│   └── strings.rs         # String utilities
 ├── xpath/
-│   ├── lexer.rs        # XPath tokenizer
-│   ├── parser.rs       # Recursive descent parser
-│   ├── compiler.rs     # Expression compiler
-│   ├── eval.rs         # Evaluation engine
-│   ├── axes.rs         # All 13 axes
-│   └── functions.rs    # 27+ XPath functions
+│   ├── lexer.rs           # XPath tokenizer
+│   ├── parser.rs          # Recursive descent parser
+│   ├── eval.rs            # Evaluation engine
+│   ├── axes.rs            # All 13 axes
+│   └── functions.rs       # 27+ XPath functions
+├── sax/
+│   ├── events.rs          # CompactSaxEvent types
+│   └── collector.rs       # SaxCollector (ScanHandler impl)
 ├── strategy/
-│   ├── streaming.rs    # Stateful streaming parser
-│   └── parallel.rs     # Parallel XPath (DirtyCpu)
-├── term.rs             # BEAM term building
-└── resource.rs         # ResourceArc wrappers
+│   ├── streaming.rs       # Stateful streaming parser
+│   └── parallel.rs        # Parallel XPath (DirtyCpu)
+├── term.rs                # BEAM term building
+└── resource.rs            # ResourceArc wrappers
 ```
+
+See [Architecture](docs/ARCHITECTURE.md) for full details.
 
 ## Parsing Modes: Lenient vs Strict
 
@@ -434,6 +481,26 @@ RustyXML is built with defense-in-depth for production reliability:
 
 See [Architecture: NIF Safety](docs/ARCHITECTURE.md#nif-safety) for implementation details.
 
+## Migration
+
+### From SweetXml
+
+```bash
+# Change the import — API is compatible
+sed -i 's/SweetXml/RustyXML/g' lib/**/*.ex
+```
+
+### From Saxy
+
+```bash
+# Change the module name — API is compatible
+sed -i 's/Saxy/RustyXML/g' lib/**/*.ex
+```
+
+### From Both
+
+RustyXML replaces both libraries with no conflicts. SweetXml functions (`xpath/2`, `xmap/2`, `~x` sigil) and Saxy functions (`parse_string/4`, `parse_stream/4`, `encode!/2`) coexist at different arities.
+
 ## Development
 
 ```bash
@@ -447,7 +514,8 @@ FORCE_RUSTYXML_BUILD=1 mix compile
 FORCE_RUSTYXML_BUILD=1 mix test
 
 # Run benchmarks
-mix run bench/xml_bench.exs
+mix run bench/sweet_bench.exs
+mix run bench/saxy_bench.exs
 ```
 
 ## License

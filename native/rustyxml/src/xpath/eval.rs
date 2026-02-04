@@ -58,8 +58,8 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
     for op in &expr.ops {
         match op {
             Op::Root => {
-                // Root is node 0 (document) or root element
-                stack.push(XPathValue::single_node(0));
+                // Root is the document node (for XPath absolute paths like /root)
+                stack.push(XPathValue::single_node(ctx.doc.document_node_id()));
             }
 
             Op::Context => {
@@ -75,11 +75,9 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                     let mut seen = HashSet::with_capacity(nodes.len());
                     let mut parents = Vec::with_capacity(nodes.len());
                     for node in nodes {
-                        if let Some(n) = ctx.doc.get_node(node) {
-                            if let Some(parent) = n.parent {
-                                if seen.insert(parent) {
-                                    parents.push(parent);
-                                }
+                        if let Some(parent) = ctx.doc.parent_of(node) {
+                            if seen.insert(parent) {
+                                parents.push(parent);
                             }
                         }
                     }
@@ -129,8 +127,12 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                     } else {
                         // Use HashSet for O(1) deduplication instead of O(n) Vec::contains
                         // This changes O(n²) to O(n) for large node sets
-                        let mut seen = HashSet::with_capacity(nodes.len() * 4);
-                        let mut result = Vec::with_capacity(nodes.len() * 4);
+                        // Capacity: nodes.len() is a reasonable estimate — axis navigation
+                        // typically produces a similar-sized or smaller result set.
+                        // Avoid over-allocating (the old 4x multiplier caused ~5 MB
+                        // HashSet pre-allocation for 120K-node descendant traversals).
+                        let mut seen = HashSet::with_capacity(nodes.len());
+                        let mut result = Vec::with_capacity(nodes.len());
                         for node in nodes {
                             let axis_nodes = navigate(ctx.doc, node, *axis);
                             for candidate in axis_nodes {

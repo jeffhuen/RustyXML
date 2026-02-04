@@ -63,7 +63,14 @@ defmodule RustyXML.Streaming do
   @typedoc "Streamed element tuple - {tag_atom, xml_string}"
   @type streamed_element :: {atom(), binary()}
 
-  @typedoc "Options for streaming functions"
+  @typedoc """
+  Options for streaming functions.
+
+  The `:discard` option is accepted for SweetXml API compatibility but has no
+  effect. RustyXML's streaming parser already operates in bounded memory
+  (~200 KB peak for a 2.93 MB document) by only materializing one element at a
+  time, so tag discarding for memory reduction is unnecessary.
+  """
   @type stream_options :: [
           chunk_size: pos_integer(),
           discard: [atom() | binary()]

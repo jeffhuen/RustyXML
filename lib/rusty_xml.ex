@@ -67,6 +67,11 @@ defmodule RustyXML do
 
   @type document :: Native.document_ref()
   @type xml_node :: {:element, binary(), [{binary(), binary()}], [xml_node() | binary()]}
+  @type handler :: module()
+  @type parse_option ::
+          {:cdata_as_characters, boolean()}
+          | {:expand_entity, :keep | :skip | (String.t() -> String.t())}
+  @type parse_options :: [parse_option()]
 
   # ==========================================================================
   # SweetXpath Struct (SweetXml compatible)
@@ -157,8 +162,14 @@ defmodule RustyXML do
       doc = RustyXML.parse("<1invalid/>", lenient: true)
 
   """
-  @spec parse(binary(), keyword()) :: document()
-  def parse(xml, opts \\ []) when is_binary(xml) do
+  @spec parse(binary() | charlist(), keyword()) :: document()
+  def parse(xml, opts \\ [])
+
+  def parse(xml, opts) when is_list(xml) do
+    parse(IO.chardata_to_string(xml), opts)
+  end
+
+  def parse(xml, opts) when is_binary(xml) do
     if Keyword.get(opts, :lenient, false) do
       Native.parse(xml)
     else
@@ -181,9 +192,13 @@ defmodule RustyXML do
       {:error, reason} = RustyXML.parse_document("<1invalid/>")
 
   """
-  @spec parse_document(binary()) :: {:ok, document()} | {:error, binary()}
+  @spec parse_document(binary() | charlist()) :: {:ok, document()} | {:error, binary()}
   def parse_document(xml) when is_binary(xml) do
     Native.parse_strict(xml)
+  end
+
+  def parse_document(xml) when is_list(xml) do
+    parse_document(IO.chardata_to_string(xml))
   end
 
   @doc """
@@ -211,6 +226,13 @@ defmodule RustyXML do
   @spec xpath(binary() | document(), SweetXpath.t() | binary()) :: term()
   def xpath(xml_or_doc, spec)
 
+  # Raw XML + SweetXpath with is_value: true → optimized text extraction
+  def xpath(xml, %SweetXpath{is_value: true} = spec) when is_binary(xml) do
+    result = Native.parse_and_xpath_text(xml, spec.path)
+    apply_modifiers(result, spec, xml)
+  end
+
+  # Raw XML + SweetXpath with is_value: false (e modifier) → element tuples
   def xpath(xml, %SweetXpath{} = spec) when is_binary(xml) do
     result = Native.parse_and_xpath(xml, spec.path)
     apply_modifiers(result, spec, xml)
@@ -220,6 +242,13 @@ defmodule RustyXML do
     Native.parse_and_xpath(xml, path)
   end
 
+  # Doc ref + SweetXpath with is_value: true → optimized text extraction
+  def xpath(doc, %SweetXpath{is_value: true} = spec) do
+    result = Native.xpath_text_list(doc, spec.path)
+    apply_modifiers(result, spec, nil)
+  end
+
+  # Doc ref + SweetXpath with is_value: false (e modifier) → element tuples
   def xpath(doc, %SweetXpath{} = spec) do
     result = Native.xpath_query(doc, spec.path)
     apply_modifiers(result, spec, nil)
@@ -250,38 +279,49 @@ defmodule RustyXML do
   def xpath(xml_or_doc, spec, subspecs) when is_list(subspecs) do
     parent_path = extract_path(spec)
 
-    # Convert subspecs to the format expected by NIF: [{key_string, xpath_string}]
-    nif_subspecs =
-      Enum.map(subspecs, fn {key, subspec} ->
-        {Atom.to_string(key), extract_path(subspec)}
-      end)
-
-    # Get the raw XML if needed
-    xml =
+    result =
       if is_binary(xml_or_doc) do
-        xml_or_doc
+        # Raw XML: use efficient NIF that does it all in one pass
+        nif_subspecs =
+          Enum.map(subspecs, fn {key, subspec} ->
+            {Atom.to_string(key), extract_path(subspec)}
+          end)
+
+        Native.xpath_with_subspecs(xml_or_doc, parent_path, nif_subspecs)
+        |> Enum.map(&apply_subspecs_from_nif(&1, subspecs, xml_or_doc))
       else
-        # For document refs, we can't use xpath_with_subspecs directly
-        # Fall back to individual queries (less efficient)
-        return_individual_queries(xml_or_doc, spec, subspecs)
+        # Doc ref: get parent nodes as XML strings, then sub-query each
+        parent_xml_list =
+          case Native.xpath_query_raw(xml_or_doc, parent_path) do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        Enum.map(parent_xml_list, &query_subspecs(&1, subspecs))
       end
 
-    if is_binary(xml) do
-      Native.xpath_with_subspecs(xml, parent_path, nif_subspecs)
-      |> maybe_apply_list_modifier(spec)
-    else
-      # Return the result from fallback
-      xml
-    end
+    maybe_apply_list_modifier(result, spec)
   end
 
-  # Fallback for document refs - query individually
-  defp return_individual_queries(doc, parent_spec, _subspecs) do
-    parent_result = xpath(doc, parent_spec)
+  # Apply modifiers for subspec values from the NIF (which returns raw XPath results)
+  defp apply_subspec_value(raw_value, %SweetXpath{} = subspec, xml) do
+    apply_modifiers(raw_value, subspec, xml)
+  end
 
-    # For now, return parent result without subspec processing
-    # Full implementation would require additional NIF support
-    parent_result
+  defp apply_subspec_value(raw_value, _binary_spec, _xml), do: raw_value
+
+  defp apply_subspecs_from_nif(nif_map, subspecs, xml) do
+    Enum.map(subspecs, fn {key, subspec} ->
+      raw_value = Map.get(nif_map, Atom.to_string(key))
+      {key, apply_subspec_value(raw_value, subspec, xml)}
+    end)
+    |> Map.new()
+  end
+
+  defp query_subspecs(parent_xml, subspecs) do
+    subspecs
+    |> Enum.map(fn {key, subspec} -> {key, xpath(parent_xml, subspec)} end)
+    |> Map.new()
   end
 
   @doc """
@@ -289,7 +329,8 @@ defmodule RustyXML do
 
   ## Options
 
-    * None currently supported (for SweetXml compatibility)
+  The third argument is accepted for SweetXml API compatibility but
+  is not required. Use the `k` sigil modifier instead for keyword output.
 
   ## Examples
 
@@ -302,17 +343,34 @@ defmodule RustyXML do
       #=> %{a: "1", b: "2"}
 
   """
-  @spec xmap(binary() | document(), keyword(), keyword()) :: map()
-  def xmap(xml_or_doc, specs, opts \\ []) when is_list(specs) do
+  @spec xmap(binary() | document(), keyword(), boolean() | map()) :: map() | keyword()
+  def xmap(xml_or_doc, specs, opts \\ false) when is_list(specs) do
     doc = if is_binary(xml_or_doc), do: parse(xml_or_doc), else: xml_or_doc
-    # Reserved for future options
-    _ = opts
 
-    specs
-    |> Enum.map(fn {key, spec} ->
-      {key, evaluate_spec(doc, xml_or_doc, spec)}
-    end)
-    |> maybe_to_keyword(specs)
+    result =
+      Enum.map(specs, fn {key, spec} ->
+        {key, evaluate_spec(doc, xml_or_doc, spec)}
+      end)
+
+    as_keyword =
+      cond do
+        opts == true ->
+          true
+
+        is_map(opts) && Map.get(opts, :is_keyword, false) ->
+          true
+
+        Enum.any?(specs, fn
+          {_, %SweetXpath{is_keyword: true}} -> true
+          _ -> false
+        end) ->
+          true
+
+        true ->
+          false
+      end
+
+    if as_keyword, do: Keyword.new(result), else: Map.new(result)
   end
 
   # Evaluate a spec - handles both simple specs and nested list specs
@@ -411,49 +469,6 @@ defmodule RustyXML do
     |> String.replace("\"", "&quot;")
   end
 
-  # Convert to keyword list if any spec has is_keyword set
-  defp maybe_to_keyword(result, specs) do
-    has_keyword =
-      Enum.any?(specs, fn
-        {_, %SweetXpath{is_keyword: true}} -> true
-        _ -> false
-      end)
-
-    if has_keyword do
-      Keyword.new(result)
-    else
-      Map.new(result)
-    end
-  end
-
-  @doc """
-  Execute multiple XPath queries in parallel and return as a map.
-
-  Uses Rayon thread pool for parallel evaluation. More efficient than
-  `xmap/2` for many queries on large documents.
-
-  ## Examples
-
-      doc = RustyXML.parse(large_xml)
-      RustyXML.xmap_parallel(doc, [
-        items: ~x"//item"l,
-        count: ~x"count(//item)"
-      ])
-
-  """
-  @spec xmap_parallel(document(), keyword()) :: map()
-  def xmap_parallel(doc, specs) when is_list(specs) do
-    xpaths = Enum.map(specs, fn {_key, spec} -> extract_path(spec) end)
-    results = Native.xpath_parallel(doc, xpaths)
-
-    specs
-    |> Enum.zip(results)
-    |> Enum.map(fn {{key, spec}, result} ->
-      {key, apply_modifiers(result, spec, nil)}
-    end)
-    |> Map.new()
-  end
-
   @doc """
   Add a namespace binding to an XPath expression.
 
@@ -497,8 +512,13 @@ defmodule RustyXML do
   ## Options
 
     * `:chunk_size` - Bytes to read per IO operation (default: 64KB)
-    * `:batch_size` - Maximum events per iteration (default: 100)
-    * `:discard` - List of tags to discard (for memory efficiency)
+    * `:batch_size` - Accepted for SweetXml API compatibility but has no effect.
+      RustyXML's streaming parser yields complete elements directly from Rust
+      as they are parsed — there is no event batching step to tune.
+    * `:discard` - Accepted for SweetXml API compatibility but has no effect.
+      RustyXML's streaming parser already operates in bounded memory (~200 KB
+      peak for a 2.93 MB document) by only materializing one element at a time,
+      so tag discarding for memory reduction is unnecessary.
 
   ## Examples
 
@@ -517,8 +537,8 @@ defmodule RustyXML do
   @doc """
   Stream XML events from a file. Raises on error.
 
-  Same as `stream_tags/3` but raises on read errors instead of returning
-  error tuples.
+  Provided for SweetXml API compatibility. Behaves identically to
+  `stream_tags/3`, which already raises on read errors.
   """
   @spec stream_tags!(binary() | Enumerable.t(), atom() | binary(), keyword()) :: Enumerable.t()
   def stream_tags!(source, tag, opts \\ []) do
@@ -540,6 +560,244 @@ defmodule RustyXML do
   def root(doc) do
     Native.get_root(doc)
   end
+
+  # ==========================================================================
+  # SAX Parsing API (Saxy-compatible)
+  # ==========================================================================
+
+  @doc """
+  Parse an XML string with a SAX event handler.
+
+  Drop-in replacement for `Saxy.parse_string/4`.
+
+  The handler module must implement `RustyXML.Handler` (same callback as
+  `Saxy.Handler`). Events are dispatched in document order.
+
+  ## Options
+
+    * `:cdata_as_characters` - Emit CDATA as `:characters` events (default: `false`)
+    * `:expand_entity` - Accepted for Saxy API compatibility (default: `:keep`)
+
+  ## Examples
+
+      defmodule MyHandler do
+        @behaviour RustyXML.Handler
+
+        def handle_event(:start_element, {name, _attrs}, acc), do: {:ok, [name | acc]}
+        def handle_event(_, _, acc), do: {:ok, acc}
+      end
+
+      {:ok, names} = RustyXML.parse_string("<root><a/><b/></root>", MyHandler, [])
+      #=> {:ok, ["b", "a", "root"]}
+
+  """
+  @spec parse_string(binary(), handler(), any(), parse_options()) ::
+          {:ok, any()} | {:halt, any()} | {:error, any()}
+  def parse_string(xml, handler, initial_state, opts \\ []) when is_binary(xml) do
+    cdata_as_chars = Keyword.get(opts, :cdata_as_characters, false)
+
+    try do
+      # Single NIF call — sax_parse_saxy/2 does a zero-copy scan via
+      # UnifiedScanner + SaxCollector, returning all events in Saxy format
+      # in one pass. No EventTransformer pass needed.
+      saxy_events = Native.sax_parse_saxy(xml, cdata_as_chars)
+
+      prolog = extract_prolog(xml)
+      state = dispatch_handler(handler, :start_document, prolog, initial_state)
+      state = dispatch_saxy_events(saxy_events, handler, state, cdata_as_chars)
+      final_state = dispatch_handler(handler, :end_document, {}, state)
+
+      {:ok, final_state}
+    rescue
+      e -> {:error, e}
+    catch
+      {:sax_stop, value} -> {:ok, value}
+      {:sax_halt, value} -> {:halt, value}
+    end
+  end
+
+  @doc """
+  Parse an XML stream with a SAX event handler.
+
+  Drop-in replacement for `Saxy.parse_stream/4`.
+
+  Accepts any `Enumerable` that yields binary chunks (e.g. `File.stream!/3`).
+  Uses bounded memory via binary-encoded events: the NIF tokenizes each chunk
+  in Rust and returns all events packed into a single binary. Elixir then
+  decodes one event at a time via binary pattern matching, so only one event
+  tuple is ever live on the heap — matching Saxy's inline-handler memory
+  profile while running ~1.7x faster.
+
+  ## Examples
+
+      File.stream!("large.xml", [], 64 * 1024)
+      |> RustyXML.parse_stream(MyHandler, initial_state)
+
+  """
+  @spec parse_stream(Enumerable.t(), handler(), any(), parse_options()) ::
+          {:ok, any()} | {:halt, any()} | {:error, any()}
+  def parse_stream(stream, handler, initial_state, opts \\ []) do
+    cdata_as_chars = Keyword.get(opts, :cdata_as_characters, false)
+
+    try do
+      parser = Native.streaming_sax_new()
+      state = dispatch_handler(handler, :start_document, [], initial_state)
+
+      state =
+        Enum.reduce(stream, state, fn chunk, state ->
+          chunk_binary = if is_binary(chunk), do: chunk, else: IO.iodata_to_binary(chunk)
+          encoded = Native.streaming_feed_sax(parser, chunk_binary, cdata_as_chars)
+          dispatch_encoded_events(encoded, handler, state)
+        end)
+
+      remaining = Native.streaming_finalize_sax(parser, cdata_as_chars)
+      state = dispatch_encoded_events(remaining, handler, state)
+      final_state = dispatch_handler(handler, :end_document, {}, state)
+      {:ok, final_state}
+    rescue
+      e -> {:error, e}
+    catch
+      {:sax_stop, value} -> {:ok, value}
+      {:sax_halt, value} -> {:halt, value}
+    end
+  end
+
+  @doc """
+  Encode an XML element tree to a string.
+
+  Drop-in replacement for `Saxy.encode!/2`.
+
+  ## Examples
+
+      import RustyXML.XML
+
+      element("root", [], ["text"]) |> RustyXML.encode!()
+      #=> "<root>text</root>"
+
+  """
+  @spec encode!(term(), keyword()) :: String.t()
+  defdelegate encode!(content, opts \\ []), to: RustyXML.Encoder
+
+  @doc """
+  Encode an XML element tree to iodata.
+
+  Drop-in replacement for `Saxy.encode_to_iodata!/2`.
+  """
+  @spec encode_to_iodata!(term(), keyword()) :: iodata()
+  defdelegate encode_to_iodata!(content, opts \\ []), to: RustyXML.Encoder, as: :encode_to_iodata
+
+  # ==========================================================================
+  # SAX Internals
+  # ==========================================================================
+
+  defp dispatch_saxy_events(events, handler, state, cdata_as_chars) do
+    Enum.reduce(events, state, fn event, state ->
+      {type, data} = normalize_sax_event(event, cdata_as_chars)
+      dispatch_handler(handler, type, data, state)
+    end)
+  end
+
+  defp normalize_sax_event({:cdata, content}, true), do: {:characters, content}
+  defp normalize_sax_event({type, data}, _cdata_as_chars), do: {type, data}
+
+  # Binary-encoded event dispatch for `parse_stream/4`.
+  #
+  # The NIF packs all SAX events from a chunk into a single binary instead of
+  # creating ~1,700 BEAM tuples per 64 KB chunk. This function decodes one
+  # event at a time via pattern matching and calls the handler immediately,
+  # so only one event tuple is ever live on the heap.
+  #
+  # Wire format (big-endian):
+  #   1 = start_element: <<1, name_len::16, name, attr_count::16, [nlen::16, n, vlen::16, v]*>>
+  #   2 = end_element:   <<2, name_len::16, name>>
+  #   3 = characters:    <<3, text_len::32, text>>
+  #   4 = cdata:         <<4, text_len::32, text>>
+  defp dispatch_encoded_events(<<>>, _handler, state), do: state
+
+  # 1 = start_element
+  defp dispatch_encoded_events(
+         <<1, nlen::16, name::binary-size(nlen), rest::binary>>,
+         handler,
+         state
+       ) do
+    {attrs, rest} = decode_encoded_attrs(rest)
+    state = dispatch_handler(handler, :start_element, {name, attrs}, state)
+    dispatch_encoded_events(rest, handler, state)
+  end
+
+  # 2 = end_element
+  defp dispatch_encoded_events(
+         <<2, nlen::16, name::binary-size(nlen), rest::binary>>,
+         handler,
+         state
+       ) do
+    state = dispatch_handler(handler, :end_element, name, state)
+    dispatch_encoded_events(rest, handler, state)
+  end
+
+  # 3 = characters
+  defp dispatch_encoded_events(
+         <<3, tlen::32, text::binary-size(tlen), rest::binary>>,
+         handler,
+         state
+       ) do
+    state = dispatch_handler(handler, :characters, text, state)
+    dispatch_encoded_events(rest, handler, state)
+  end
+
+  # 4 = cdata
+  defp dispatch_encoded_events(
+         <<4, tlen::32, text::binary-size(tlen), rest::binary>>,
+         handler,
+         state
+       ) do
+    state = dispatch_handler(handler, :cdata, text, state)
+    dispatch_encoded_events(rest, handler, state)
+  end
+
+  defp decode_encoded_attrs(<<count::16, rest::binary>>) do
+    decode_encoded_attrs(rest, count, [])
+  end
+
+  defp decode_encoded_attrs(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp decode_encoded_attrs(
+         <<nlen::16, name::binary-size(nlen), vlen::16, value::binary-size(vlen), rest::binary>>,
+         count,
+         acc
+       ) do
+    decode_encoded_attrs(rest, count - 1, [{name, value} | acc])
+  end
+
+  defp dispatch_handler(handler, type, data, state) do
+    case handler.handle_event(type, data, state) do
+      {:ok, new_state} -> new_state
+      {:stop, value} -> throw({:sax_stop, value})
+      {:halt, value} -> throw({:sax_halt, value})
+    end
+  end
+
+  defp extract_prolog(xml) do
+    case Regex.run(~r/<\?xml([^?]*)\?>/, xml) do
+      [_, attrs_str] ->
+        [version: extract_xml_attr(attrs_str, "version") || "1.0"]
+        |> maybe_add_prolog(:encoding, extract_xml_attr(attrs_str, "encoding"))
+        |> maybe_add_prolog(:standalone, extract_xml_attr(attrs_str, "standalone"))
+
+      nil ->
+        []
+    end
+  end
+
+  defp extract_xml_attr(str, name) do
+    case Regex.run(~r/#{name}\s*=\s*["']([^"']*)["']/, str) do
+      [_, value] -> value
+      nil -> nil
+    end
+  end
+
+  defp maybe_add_prolog(list, _key, nil), do: list
+  defp maybe_add_prolog(list, key, value), do: Keyword.put(list, key, value)
 
   # ==========================================================================
   # Sigil

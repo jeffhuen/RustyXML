@@ -1,8 +1,9 @@
 [package]
 name = "rustyxml"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Jeff Huen"]
 edition = "2021"
+rust-version = "1.91"
 
 [lib]
 name = "rustyxml"
@@ -10,6 +11,7 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+# Rustler for NIF bindings
 rustler = "0.37"
 memchr = "2.7"    # Fast byte searching, uses SIMD when available
 lru = "0.12"      # LRU cache for compiled XPath expressions
@@ -17,7 +19,7 @@ rayon = "1.10"    # Data parallelism for parallel XPath evaluation
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [features]
-default = ["mimalloc"]
+default = ["mimalloc", "memory_tracking"]
 mimalloc = ["dep:mimalloc"]
 # Enable memory tracking (adds overhead - use only for profiling)
 memory_tracking = []
@@ -25,3 +27,7 @@ memory_tracking = []
 nif_version_2_15 = ["rustler/nif_version_2_15"]
 nif_version_2_16 = ["rustler/nif_version_2_16"]
 nif_version_2_17 = ["rustler/nif_version_2_17"]
+
+# For development with zero-copy support, override rustler in .cargo/config.toml:
+# [patch.crates-io]
+# rustler = { git = "https://github.com/rusterlium/rustler", branch = "master" }

@@ -1,7 +1,7 @@
 defmodule RustyXML.MixProject do
   use Mix.Project
 
-  @version "0.1.1"
+  @version "0.2.0"
   @source_url "https://github.com/jeffhuen/rustyxml"
 
   def project do
@@ -31,8 +31,10 @@ defmodule RustyXML.MixProject do
   defp description do
     """
     Ultra-fast XML parser and XPath 1.0 engine for Elixir, built from scratch as a
-    Rust NIF. 100% W3C/OASIS XML Conformance (1089/1089 tests). 6-40x faster than
-    xmerl/SweetXml. Drop-in SweetXml replacement with ~x sigil and streaming support.
+    Rust NIF with SIMD-accelerated zero-copy structural index. 100% W3C/OASIS XML
+    Conformance (1089/1089 tests). 8-72x faster parsing, 89-100x less memory than
+    SweetXml/xmerl. Drop-in replacement for both SweetXml and Saxy — one dependency
+    replaces two with the ~x sigil, SAX handler callbacks, streaming, and XML encoding.
     """
   end
 
@@ -83,6 +85,14 @@ defmodule RustyXML.MixProject do
         Core: [
           RustyXML
         ],
+        "SAX / Saxy-Compatible": [
+          RustyXML.Handler,
+          RustyXML.Partial,
+          RustyXML.SimpleForm,
+          RustyXML.XML,
+          RustyXML.Builder,
+          RustyXML.Encoder
+        ],
         Streaming: [
           RustyXML.Streaming
         ],
@@ -98,6 +108,7 @@ defmodule RustyXML.MixProject do
       {:rustler, "~> 0.37", optional: true},
       {:rustler_precompiled, "~> 0.8"},
       {:sweet_xml, "~> 0.7", only: [:dev, :test]},
+      {:saxy, "~> 1.6", only: [:dev, :test]},
       {:benchee, "~> 1.0", only: :dev},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

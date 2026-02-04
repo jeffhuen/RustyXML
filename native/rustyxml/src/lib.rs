@@ -1,10 +1,9 @@
-//! RustyXML - Fast XML parsing with multiple strategies
+//! RustyXML - Fast XML parsing
 //!
 //! Strategies:
-//! A: Zero-copy slice parser (parse_events)
-//! C: DOM parser with XPath (parse, xpath)
-//! D: Streaming tag parser (streaming_*)
-//! E: Parallel XPath (xpath_parallel)
+//! - parse/1 + xpath_query/2: Structural index with XPath (main path)
+//! - streaming_*: Streaming parser for large files
+//! - sax_parse/1: SAX events
 
 use rustler::{Binary, Encoder, Env, NifResult, ResourceArc, Term};
 
@@ -25,21 +24,23 @@ mod atoms {
 
 #[allow(dead_code)]
 mod core;
-#[allow(dead_code)]
 mod dom;
+mod index;
 #[allow(dead_code)]
 mod reader;
 mod resource;
+#[allow(dead_code)]
+mod sax;
 #[allow(dead_code)]
 mod strategy;
 mod term;
 #[allow(dead_code)]
 mod xpath;
 
-use dom::XmlDocument;
+use dom::DocumentAccess;
 use resource::{
-    DocumentRef, DocumentResource, StreamingParserRef, StreamingParserResource, XPathResultRef,
-    XPathResultResource,
+    DocumentAccumulatorRef, IndexedDocumentRef, IndexedDocumentResource, StreamingParserRef,
+    StreamingParserResource, StreamingSaxParserRef, StreamingSaxParserResource,
 };
 use term::{events_to_term, node_to_term, xpath_value_to_term};
 use xpath::evaluate;
@@ -146,75 +147,16 @@ fn reset_rust_memory_stats() -> (usize, usize) {
 }
 
 // ============================================================================
-// Strategy A: Zero-Copy Event Parser
+// Main Parse Path: Structural Index + XPath
 // ============================================================================
 
-/// Parse XML and return list of events
-#[rustler::nif(schedule = "DirtyCpu")]
-fn parse_events<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
-    let bytes = input.as_slice();
-    let events: Vec<_> = reader::slice::SliceReader::new(bytes)
-        .filter_map(|event| {
-            // Convert to owned events for term building
-            match event {
-                reader::events::XmlEvent::StartElement(e) => {
-                    Some(strategy::streaming::OwnedXmlEvent::StartElement {
-                        name: e.name.into_owned(),
-                        attributes: e
-                            .attributes
-                            .into_iter()
-                            .map(|a| (a.name.into_owned(), a.value.into_owned()))
-                            .collect(),
-                    })
-                }
-                reader::events::XmlEvent::EndElement(e) => {
-                    Some(strategy::streaming::OwnedXmlEvent::EndElement {
-                        name: e.name.into_owned(),
-                    })
-                }
-                reader::events::XmlEvent::EmptyElement(e) => {
-                    Some(strategy::streaming::OwnedXmlEvent::EmptyElement {
-                        name: e.name.into_owned(),
-                        attributes: e
-                            .attributes
-                            .into_iter()
-                            .map(|a| (a.name.into_owned(), a.value.into_owned()))
-                            .collect(),
-                    })
-                }
-                reader::events::XmlEvent::Text(t) => {
-                    Some(strategy::streaming::OwnedXmlEvent::Text(t.into_owned()))
-                }
-                reader::events::XmlEvent::CData(t) => {
-                    Some(strategy::streaming::OwnedXmlEvent::CData(t.into_owned()))
-                }
-                reader::events::XmlEvent::Comment(t) => {
-                    Some(strategy::streaming::OwnedXmlEvent::Comment(t.into_owned()))
-                }
-                reader::events::XmlEvent::ProcessingInstruction { target, data } => {
-                    Some(strategy::streaming::OwnedXmlEvent::ProcessingInstruction {
-                        target: target.into_owned(),
-                        data: data.map(|d| d.into_owned()).unwrap_or_default(),
-                    })
-                }
-                _ => None,
-            }
-        })
-        .collect();
-
-    Ok(events_to_term(env, events))
-}
-
-// ============================================================================
-// Strategy C: DOM Parser with XPath
-// ============================================================================
-
-/// Parse XML into a DOM document (returns ResourceArc)
+/// Parse XML into structural index (returns ResourceArc)
 /// Lenient mode - accepts malformed XML
+/// Full XPath support via xpath_query
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice().to_vec();
-    let resource = DocumentResource::new(bytes);
+    let resource = IndexedDocumentResource::new(bytes);
     let arc = ResourceArc::new(resource);
     Ok(arc.encode(env))
 }
@@ -225,9 +167,16 @@ fn parse<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
 fn parse_strict<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice().to_vec();
 
-    match dom::OwnedXmlDocument::parse_strict(bytes) {
-        Ok(doc) => {
-            let resource = DocumentResource::from_owned(doc);
+    // Handle encoding conversion (UTF-16 → UTF-8)
+    let bytes = match crate::core::encoding::convert_to_utf8(bytes) {
+        Ok(b) => b,
+        Err(msg) => return Ok((atoms::error(), msg).encode(env)),
+    };
+
+    // Lightweight validation — no DOM construction
+    match dom::validate_strict(&bytes) {
+        Ok(()) => {
+            let resource = IndexedDocumentResource::new(bytes);
             let arc = ResourceArc::new(resource);
             Ok((atoms::ok(), arc).encode(env))
         }
@@ -236,412 +185,63 @@ fn parse_strict<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
 }
 
 /// Execute XPath query on a document
-/// Uses with_view for O(1) access - no re-parsing!
 #[rustler::nif]
-fn xpath_query<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> NifResult<Term<'a>> {
-    let result = doc_ref.with_view(|view| match evaluate(&view, xpath_str) {
-        Ok(value) => xpath_value_to_term(env, value, &view),
-        Err(e) => (atoms::error(), e).encode(env),
-    });
-
-    match result {
-        Ok(term) => Ok(term),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(atoms::nil().encode(env)),
+fn xpath_query<'a>(
+    env: Env<'a>,
+    doc_ref: IndexedDocumentRef,
+    xpath_str: &str,
+) -> NifResult<Term<'a>> {
+    let view = doc_ref.as_view();
+    match evaluate(&view, xpath_str) {
+        Ok(value) => Ok(xpath_value_to_term(env, value, &view)),
+        Err(e) => Ok((atoms::error(), e).encode(env)),
     }
 }
 
 /// Execute XPath query returning XML strings for node sets (fast path)
-/// Bypasses BEAM term construction - returns list of XML binaries for elements
 #[rustler::nif]
-fn xpath_query_raw<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> NifResult<Term<'a>> {
+fn xpath_query_raw<'a>(
+    env: Env<'a>,
+    doc_ref: IndexedDocumentRef,
+    xpath_str: &str,
+) -> NifResult<Term<'a>> {
     use term::nodeset_to_xml_binaries;
     use xpath::XPathValue;
 
-    let result = doc_ref.with_view(|view| {
-        match evaluate(&view, xpath_str) {
-            Ok(value) => match value {
-                XPathValue::NodeSet(nodes) => {
-                    // Fast path: serialize nodes to XML binaries
-                    nodeset_to_xml_binaries(env, &nodes, &view)
-                }
-                // For non-node results, use regular conversion
-                _ => xpath_value_to_term(env, value, &view),
-            },
-            Err(e) => (atoms::error(), e).encode(env),
-        }
-    });
-
-    match result {
-        Ok(term) => Ok(term),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(atoms::nil().encode(env)),
+    let view = doc_ref.as_view();
+    match evaluate(&view, xpath_str) {
+        Ok(value) => match value {
+            XPathValue::NodeSet(nodes) => Ok(nodeset_to_xml_binaries(env, &nodes, &view)),
+            _ => Ok(xpath_value_to_term(env, value, &view)),
+        },
+        Err(e) => Ok((atoms::error(), e).encode(env)),
     }
 }
 
-// ============================================================================
-// Lazy XPath (Zero-copy result sets)
-// ============================================================================
-
-/// Execute XPath query returning a lazy result set (no BEAM term building)
-/// The result stays in Rust memory until explicitly accessed
+/// Execute XPath query returning text values for node sets (optimized fast path)
+/// Instead of building recursive element tuples ({:element, name, attrs, children}),
+/// extracts text content directly as strings. Used when is_value: true.
 #[rustler::nif]
-fn xpath_lazy<'a>(env: Env<'a>, doc_ref: DocumentRef, xpath_str: &str) -> NifResult<Term<'a>> {
+fn xpath_text_list<'a>(
+    env: Env<'a>,
+    doc_ref: IndexedDocumentRef,
+    xpath_str: &str,
+) -> NifResult<Term<'a>> {
     use xpath::XPathValue;
 
-    let nodes = doc_ref.with_view(|view| match evaluate(&view, xpath_str) {
-        Ok(XPathValue::NodeSet(nodes)) => Ok(nodes),
-        Ok(_) => Err("xpath_lazy only supports queries returning node sets".to_string()),
-        Err(e) => Err(e),
-    });
-
-    match nodes {
-        Ok(Ok(node_ids)) => {
-            let result = XPathResultResource::new(doc_ref.clone(), node_ids);
-            Ok(ResourceArc::new(result).encode(env))
-        }
-        Ok(Err(e)) => Ok((atoms::error(), e).encode(env)),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(atoms::nil().encode(env)),
-    }
-}
-
-/// Get the count of results in a lazy result set
-#[rustler::nif]
-fn result_count(result_ref: XPathResultRef) -> usize {
-    result_ref.count()
-}
-
-/// Get text content of a node at index in the result set
-#[rustler::nif]
-fn result_text<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> NifResult<Term<'a>> {
-    let node_id = match result_ref.get_node_id(index) {
-        Some(id) => id,
-        None => return Ok(atoms::nil().encode(env)),
-    };
-
-    let text = result_ref.doc.with_view(|view| {
-        use crate::dom::NodeKind;
-
-        // Get text content - either direct text node or concatenated child text
-        if let Some(node) = view.get_node(node_id) {
-            match node.kind {
-                NodeKind::Text | NodeKind::CData => {
-                    view.text_content(node_id).map(|s| s.to_string())
-                }
-                NodeKind::Element => {
-                    // Concatenate all descendant text
-                    let mut text = String::new();
-                    collect_text(&view, node_id, &mut text);
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text)
-                    }
-                }
-                _ => None,
+    let view = doc_ref.as_view();
+    match evaluate(&view, xpath_str) {
+        Ok(XPathValue::NodeSet(nodes)) => {
+            let mut list = Term::list_new_empty(env);
+            for &id in nodes.iter().rev() {
+                let text = get_node_text_content(&view, id);
+                let binary = term::bytes_to_binary(env, text.as_bytes());
+                list = list.list_prepend(binary);
             }
-        } else {
-            None
+            Ok(list)
         }
-    });
-
-    match text {
-        Ok(Some(s)) => Ok(s.encode(env)),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        _ => Ok(atoms::nil().encode(env)),
-    }
-}
-
-/// Helper to collect text from all descendants
-fn collect_text<D: crate::dom::DocumentAccess>(
-    doc: &D,
-    node_id: crate::dom::NodeId,
-    buf: &mut String,
-) {
-    use crate::dom::NodeKind;
-
-    if let Some(node) = doc.get_node(node_id) {
-        match node.kind {
-            NodeKind::Text | NodeKind::CData => {
-                if let Some(text) = doc.text_content(node_id) {
-                    buf.push_str(text);
-                }
-            }
-            NodeKind::Element => {
-                // Recurse into children
-                let mut child_id = node.first_child;
-                while let Some(cid) = child_id {
-                    collect_text(doc, cid, buf);
-                    child_id = doc.get_node(cid).and_then(|n| n.next_sibling);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Get an attribute value from a node at index in the result set
-#[rustler::nif]
-fn result_attr<'a>(
-    env: Env<'a>,
-    result_ref: XPathResultRef,
-    index: usize,
-    attr_name: &str,
-) -> NifResult<Term<'a>> {
-    let node_id = match result_ref.get_node_id(index) {
-        Some(id) => id,
-        None => return Ok(atoms::nil().encode(env)),
-    };
-
-    let attr_value = result_ref.doc.with_view(|view| {
-        view.get_attribute(node_id, attr_name)
-            .map(|s| s.to_string())
-    });
-
-    match attr_value {
-        Ok(Some(s)) => Ok(s.encode(env)),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        _ => Ok(atoms::nil().encode(env)),
-    }
-}
-
-/// Get the element name of a node at index in the result set
-#[rustler::nif]
-fn result_name<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> NifResult<Term<'a>> {
-    let node_id = match result_ref.get_node_id(index) {
-        Some(id) => id,
-        None => return Ok(atoms::nil().encode(env)),
-    };
-
-    let name = result_ref
-        .doc
-        .with_view(|view| view.node_name(node_id).map(|s| s.to_string()));
-
-    match name {
-        Ok(Some(s)) => Ok(s.encode(env)),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        _ => Ok(atoms::nil().encode(env)),
-    }
-}
-
-/// Get full node at index (builds BEAM term - use sparingly)
-#[rustler::nif]
-fn result_node<'a>(env: Env<'a>, result_ref: XPathResultRef, index: usize) -> NifResult<Term<'a>> {
-    let node_id = match result_ref.get_node_id(index) {
-        Some(id) => id,
-        None => return Ok(atoms::nil().encode(env)),
-    };
-
-    let term = result_ref
-        .doc
-        .with_view(|view| node_to_term(env, &view, node_id));
-
-    match term {
-        Ok(t) => Ok(t),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(atoms::nil().encode(env)),
-    }
-}
-
-// ============================================================================
-// Batch Accessors (reduce NIF call overhead)
-// ============================================================================
-
-/// Get text content for a range of indices (single NIF call)
-#[rustler::nif]
-fn result_texts<'a>(
-    env: Env<'a>,
-    result_ref: XPathResultRef,
-    start: usize,
-    count: usize,
-) -> NifResult<Term<'a>> {
-    let texts = result_ref.doc.with_view(|view| {
-        use crate::dom::NodeKind;
-
-        // Clamp to actual result count — saturating_add handles overflow,
-        // min() bounds iteration to real results
-        let end = start.saturating_add(count).min(result_ref.count());
-        let actual = end.saturating_sub(start);
-        let mut results = Vec::with_capacity(actual);
-        for i in start..end {
-            let text = if let Some(node_id) = result_ref.get_node_id(i) {
-                if let Some(node) = view.get_node(node_id) {
-                    match node.kind {
-                        NodeKind::Text | NodeKind::CData => {
-                            view.text_content(node_id).map(|s| s.to_string())
-                        }
-                        NodeKind::Element => {
-                            let mut text = String::new();
-                            collect_text(&view, node_id, &mut text);
-                            if text.is_empty() {
-                                None
-                            } else {
-                                Some(text)
-                            }
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            results.push(text);
-        }
-        results
-    });
-
-    match texts {
-        Ok(list) => {
-            let mut term_list = Term::list_new_empty(env);
-            for text in list.into_iter().rev() {
-                let term = match text {
-                    Some(s) => s.encode(env),
-                    None => atoms::nil().encode(env),
-                };
-                term_list = term_list.list_prepend(term);
-            }
-            Ok(term_list)
-        }
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(Term::list_new_empty(env)),
-    }
-}
-
-/// Get attribute values for a range of indices (single NIF call)
-#[rustler::nif]
-fn result_attrs<'a>(
-    env: Env<'a>,
-    result_ref: XPathResultRef,
-    attr_name: &str,
-    start: usize,
-    count: usize,
-) -> NifResult<Term<'a>> {
-    let attrs = result_ref.doc.with_view(|view| {
-        // Clamp to actual result count — saturating_add handles overflow,
-        // min() bounds iteration to real results
-        let end = start.saturating_add(count).min(result_ref.count());
-        let actual = end.saturating_sub(start);
-        let mut results = Vec::with_capacity(actual);
-        for i in start..end {
-            let attr = if let Some(node_id) = result_ref.get_node_id(i) {
-                view.get_attribute(node_id, attr_name)
-                    .map(|s| s.to_string())
-            } else {
-                None
-            };
-            results.push(attr);
-        }
-        results
-    });
-
-    match attrs {
-        Ok(list) => {
-            let mut term_list = Term::list_new_empty(env);
-            for attr in list.into_iter().rev() {
-                let term = match attr {
-                    Some(s) => s.encode(env),
-                    None => atoms::nil().encode(env),
-                };
-                term_list = term_list.list_prepend(term);
-            }
-            Ok(term_list)
-        }
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(Term::list_new_empty(env)),
-    }
-}
-
-/// Extract multiple fields from each node in a range (single NIF call)
-/// Returns list of maps: [%{text: "...", name: "...", "attr_name" => "value", ...}]
-/// Note: Attribute keys are binaries (not atoms) to avoid atom table exhaustion
-#[rustler::nif]
-fn result_extract<'a>(
-    env: Env<'a>,
-    result_ref: XPathResultRef,
-    start: usize,
-    count: usize,
-    attr_names: Vec<&str>,
-    include_text: bool,
-) -> NifResult<Term<'a>> {
-    use crate::dom::NodeKind;
-    use rustler::types::map::map_new;
-
-    let results = result_ref.doc.with_view(|view| {
-        // Clamp to actual result count — saturating_add handles overflow,
-        // min() bounds iteration to real results
-        let end = start.saturating_add(count).min(result_ref.count());
-        let actual = end.saturating_sub(start);
-        let mut list = Vec::with_capacity(actual);
-
-        for i in start..end {
-            if let Some(node_id) = result_ref.get_node_id(i) {
-                let mut map = map_new(env);
-
-                // Add element name (atom key - safe, predefined)
-                if let Some(name) = view.node_name(node_id) {
-                    if let Ok(new_map) = map.map_put(atoms::name().encode(env), name.encode(env)) {
-                        map = new_map;
-                    }
-                }
-
-                // Add text content if requested (atom key - safe, predefined)
-                if include_text {
-                    if let Some(node) = view.get_node(node_id) {
-                        let text = match node.kind {
-                            NodeKind::Text | NodeKind::CData => {
-                                view.text_content(node_id).map(|s| s.to_string())
-                            }
-                            NodeKind::Element => {
-                                let mut text = String::new();
-                                collect_text(&view, node_id, &mut text);
-                                if text.is_empty() {
-                                    None
-                                } else {
-                                    Some(text)
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(t) = text {
-                            if let Ok(new_map) =
-                                map.map_put(atoms::text().encode(env), t.encode(env))
-                            {
-                                map = new_map;
-                            }
-                        }
-                    }
-                }
-
-                // Add requested attributes (binary keys - safe, no atom table impact)
-                for attr_name in &attr_names {
-                    if let Some(value) = view.get_attribute(node_id, attr_name) {
-                        // Use binary key instead of atom to avoid atom table exhaustion
-                        let key = (*attr_name).encode(env);
-                        if let Ok(new_map) = map.map_put(key, value.encode(env)) {
-                            map = new_map;
-                        }
-                    }
-                }
-
-                list.push(map);
-            }
-        }
-        list
-    });
-
-    match results {
-        Ok(list) => {
-            let mut term_list = Term::list_new_empty(env);
-            for map in list.into_iter().rev() {
-                term_list = term_list.list_prepend(map);
-            }
-            Ok(term_list)
-        }
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(Term::list_new_empty(env)),
+        Ok(value) => Ok(xpath_value_to_term(env, value, &view)),
+        Err(e) => Ok((atoms::error(), e).encode(env)),
     }
 }
 
@@ -649,81 +249,96 @@ fn result_extract<'a>(
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_and_xpath<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let doc = XmlDocument::parse(bytes);
+    let idx = index::builder::build_index(bytes);
+    let view = index::IndexedDocumentView::new(&idx, bytes);
 
-    match evaluate(&doc, xpath_str) {
-        Ok(value) => Ok(xpath_value_to_term(env, value, &doc)),
+    match evaluate(&view, xpath_str) {
+        Ok(value) => Ok(xpath_value_to_term(env, value, &view)),
+        Err(e) => Ok((atoms::error(), e).encode(env)),
+    }
+}
+
+/// Parse and immediately query, returning text values for node sets
+/// Optimized path for is_value: true — avoids building element tuples
+#[rustler::nif(schedule = "DirtyCpu")]
+fn parse_and_xpath_text<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    xpath_str: &str,
+) -> NifResult<Term<'a>> {
+    use xpath::XPathValue;
+
+    let bytes = input.as_slice();
+    let idx = index::builder::build_index(bytes);
+    let view = index::IndexedDocumentView::new(&idx, bytes);
+
+    match evaluate(&view, xpath_str) {
+        Ok(XPathValue::NodeSet(nodes)) => {
+            let mut list = Term::list_new_empty(env);
+            for &id in nodes.iter().rev() {
+                let text = get_node_text_content(&view, id);
+                let binary = term::bytes_to_binary(env, text.as_bytes());
+                list = list.list_prepend(binary);
+            }
+            Ok(list)
+        }
+        Ok(value) => Ok(xpath_value_to_term(env, value, &view)),
         Err(e) => Ok((atoms::error(), e).encode(env)),
     }
 }
 
 /// Get root element of a document
 #[rustler::nif]
-fn get_root<'a>(env: Env<'a>, doc_ref: DocumentRef) -> NifResult<Term<'a>> {
-    let result = doc_ref.with_view(|view| {
-        if let Some(root_id) = view.root_element_id() {
-            node_to_term(env, &view, root_id)
-        } else {
-            atoms::nil().encode(env)
-        }
-    });
-
-    match result {
-        Ok(term) => Ok(term),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(atoms::nil().encode(env)),
+fn get_root<'a>(env: Env<'a>, doc_ref: IndexedDocumentRef) -> NifResult<Term<'a>> {
+    let view = doc_ref.as_view();
+    if let Some(root_id) = view.root_element_id() {
+        Ok(node_to_term(env, &view, root_id))
+    } else {
+        Ok(atoms::nil().encode(env))
     }
 }
 
 // ============================================================================
-// XPath with Subspecs (for xpath/3 nesting)
+// XPath Helpers
 // ============================================================================
 
 /// Execute parent XPath and evaluate subspecs for each result node
-/// Returns a list of maps: [%{"key1" => val1, "key2" => val2}, ...]
-/// Note: Keys are binaries (not atoms) to avoid atom table exhaustion
 #[rustler::nif(schedule = "DirtyCpu")]
 fn xpath_with_subspecs<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     parent_xpath: &str,
-    subspecs: Vec<(&str, &str)>, // [(key, xpath), ...]
+    subspecs: Vec<(&str, &str)>,
 ) -> NifResult<Term<'a>> {
     use xpath::evaluate_from_node;
 
     let bytes = input.as_slice();
-    let doc = XmlDocument::parse(bytes);
+    let idx = index::builder::build_index(bytes);
+    let view = index::IndexedDocumentView::new(&idx, bytes);
 
-    // Execute parent XPath
-    let parent_result = match evaluate(&doc, parent_xpath) {
+    let parent_result = match evaluate(&view, parent_xpath) {
         Ok(v) => v,
         Err(e) => {
             return Ok((atoms::error(), e).encode(env));
         }
     };
 
-    // Get the node set from parent result
     let nodes = match parent_result {
         xpath::XPathValue::NodeSet(nodes) => nodes,
         _ => return Ok(Term::list_new_empty(env)),
     };
 
-    // Build result list
     let mut result_list = Term::list_new_empty(env);
 
     for &node_id in nodes.iter().rev() {
-        // Build a map for this node
         let mut map_pairs: Vec<(Term, Term)> = Vec::new();
 
         for (key, subxpath) in &subspecs {
-            // Use binary key instead of atom to avoid atom table exhaustion
             let key_term = (*key).encode(env);
-
-            let sub_result = match evaluate_from_node(&doc, node_id, subxpath) {
-                Ok(v) => xpath_value_to_term(env, v, &doc),
+            let sub_result = match evaluate_from_node(&view, node_id, subxpath) {
+                Ok(v) => xpath_value_to_term(env, v, &view),
                 Err(_) => atoms::nil().encode(env),
             };
-
             map_pairs.push((key_term, sub_result));
         }
 
@@ -735,47 +350,14 @@ fn xpath_with_subspecs<'a>(
     Ok(result_list)
 }
 
-/// Get string value of an XPath result (for `s` modifier)
-/// Handles node-set by getting text content of first node
+/// Get string value of an XPath result
 #[rustler::nif(schedule = "DirtyCpu")]
 fn xpath_string_value<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let doc = XmlDocument::parse(bytes);
+    let idx = index::builder::build_index(bytes);
+    let view = index::IndexedDocumentView::new(&idx, bytes);
 
-    match evaluate(&doc, xpath_str) {
-        Ok(value) => {
-            let string_val = match value {
-                xpath::XPathValue::String(s) => s,
-                xpath::XPathValue::Number(n) => n.to_string(),
-                xpath::XPathValue::Boolean(b) => b.to_string(),
-                xpath::XPathValue::NodeSet(nodes) => {
-                    // Get text content of first node
-                    if let Some(&node_id) = nodes.first() {
-                        get_node_text_content(&doc, node_id)
-                    } else {
-                        String::new()
-                    }
-                }
-                xpath::XPathValue::StringList(list) => {
-                    // Return first string from list
-                    list.into_iter().next().unwrap_or_default()
-                }
-            };
-            Ok(string_val.encode(env))
-        }
-        Err(e) => Ok((atoms::error(), e).encode(env)),
-    }
-}
-
-/// Get string value from document reference
-/// Uses with_view for O(1) access - no re-parsing!
-#[rustler::nif]
-fn xpath_string_value_doc<'a>(
-    env: Env<'a>,
-    doc_ref: DocumentRef,
-    xpath_str: &str,
-) -> NifResult<Term<'a>> {
-    let result = doc_ref.with_view(|view| match evaluate(&view, xpath_str) {
+    match evaluate(&view, xpath_str) {
         Ok(value) => {
             let string_val = match value {
                 xpath::XPathValue::String(s) => s,
@@ -790,15 +372,38 @@ fn xpath_string_value_doc<'a>(
                 }
                 xpath::XPathValue::StringList(list) => list.into_iter().next().unwrap_or_default(),
             };
-            string_val.encode(env)
+            Ok(string_val.encode(env))
         }
-        Err(e) => (atoms::error(), e).encode(env),
-    });
+        Err(e) => Ok((atoms::error(), e).encode(env)),
+    }
+}
 
-    match result {
-        Ok(term) => Ok(term),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok("".encode(env)),
+/// Get string value from document reference
+#[rustler::nif]
+fn xpath_string_value_doc<'a>(
+    env: Env<'a>,
+    doc_ref: IndexedDocumentRef,
+    xpath_str: &str,
+) -> NifResult<Term<'a>> {
+    let view = doc_ref.as_view();
+    match evaluate(&view, xpath_str) {
+        Ok(value) => {
+            let string_val = match value {
+                xpath::XPathValue::String(s) => s,
+                xpath::XPathValue::Number(n) => n.to_string(),
+                xpath::XPathValue::Boolean(b) => b.to_string(),
+                xpath::XPathValue::NodeSet(nodes) => {
+                    if let Some(&node_id) = nodes.first() {
+                        get_node_text_content(&view, node_id)
+                    } else {
+                        String::new()
+                    }
+                }
+                xpath::XPathValue::StringList(list) => list.into_iter().next().unwrap_or_default(),
+            };
+            Ok(string_val.encode(env))
+        }
+        Err(e) => Ok((atoms::error(), e).encode(env)),
     }
 }
 
@@ -806,25 +411,14 @@ fn xpath_string_value_doc<'a>(
 fn get_node_text_content<D: dom::DocumentAccess>(doc: &D, node_id: dom::NodeId) -> String {
     use dom::NodeKind;
 
-    let node = match doc.get_node(node_id) {
-        Some(n) => n,
-        None => return String::new(),
-    };
+    let kind = doc.node_kind_of(node_id);
 
-    match node.kind {
+    match kind {
         NodeKind::Text | NodeKind::CData => doc.text_content(node_id).unwrap_or("").to_string(),
         NodeKind::Element => {
-            // Concatenate all descendant text nodes
             let mut result = String::new();
             collect_text_content(doc, node_id, &mut result);
             result
-        }
-        NodeKind::Attribute => {
-            // Attribute values are stored in name_id for virtual attribute nodes
-            doc.strings()
-                .get_str(node.name_id)
-                .unwrap_or("")
-                .to_string()
         }
         _ => String::new(),
     }
@@ -839,12 +433,9 @@ fn collect_text_content<D: dom::DocumentAccess>(
     use dom::NodeKind;
 
     for child_id in doc.children_vec(node_id) {
-        let child = match doc.get_node(child_id) {
-            Some(n) => n,
-            None => continue,
-        };
+        let kind = doc.node_kind_of(child_id);
 
-        match child.kind {
+        match kind {
             NodeKind::Text | NodeKind::CData => {
                 if let Some(text) = doc.text_content(child_id) {
                     result.push_str(text);
@@ -859,7 +450,7 @@ fn collect_text_content<D: dom::DocumentAccess>(
 }
 
 // ============================================================================
-// Strategy D: Streaming Parser
+// Streaming Parser
 // ============================================================================
 
 /// Create a new streaming parser
@@ -907,7 +498,6 @@ fn streaming_take_events<'a>(
 }
 
 /// Take up to `max` complete elements from the streaming parser
-/// Returns list of XML binaries - faster than event-based reconstruction
 #[rustler::nif]
 fn streaming_take_elements<'a>(
     env: Env<'a>,
@@ -918,7 +508,6 @@ fn streaming_take_elements<'a>(
         Ok(mut inner) => {
             let elements = inner.take_elements(max);
 
-            // Convert Vec<Vec<u8>> to Elixir list of binaries
             let mut list = Term::list_new_empty(env);
             for element in elements.into_iter().rev() {
                 let binary = term::bytes_to_binary(env, &element);
@@ -969,36 +558,719 @@ fn streaming_status<'a>(env: Env<'a>, parser: StreamingParserRef) -> NifResult<T
 }
 
 // ============================================================================
-// Strategy E: Parallel XPath
+// SimpleForm Parsing
 // ============================================================================
 
-/// Execute multiple XPath queries in parallel
-/// Uses with_view for O(1) access - no re-parsing!
+/// Parse XML directly into SimpleForm {name, attrs, children} tree
+///
+/// Bypasses SAX event pipeline entirely — builds the tree in Rust from the
+/// structural index, decoding entities as needed. Returns {:ok, tree} or
+/// {:error, reason}.
 #[rustler::nif(schedule = "DirtyCpu")]
-fn xpath_parallel<'a>(
-    env: Env<'a>,
-    doc_ref: DocumentRef,
-    xpaths: Vec<&str>,
-) -> NifResult<Term<'a>> {
-    let result = doc_ref.with_view(|view| {
-        let results = strategy::parallel::evaluate_parallel(&view, &xpaths);
+fn parse_to_simple_form<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
+    let bytes = input.as_slice().to_vec();
 
-        let mut list = Term::list_new_empty(env);
-        for result in results.into_iter().rev() {
-            let term = match result {
-                Ok(value) => xpath_value_to_term(env, value, &view),
-                Err(e) => (atoms::error(), e).encode(env),
-            };
-            list = list.list_prepend(term);
-        }
-        list
-    });
+    // Handle encoding conversion (UTF-16 → UTF-8)
+    let bytes = match crate::core::encoding::convert_to_utf8(bytes) {
+        Ok(b) => b,
+        Err(msg) => return Ok((atoms::error(), msg).encode(env)),
+    };
 
-    match result {
-        Ok(term) => Ok(term),
-        Err("mutex_poisoned") => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
-        Err(_) => Ok(Term::list_new_empty(env)),
+    // Validate strict
+    match dom::validate_strict(&bytes) {
+        Ok(()) => {}
+        Err(msg) => return Ok((atoms::error(), msg).encode(env)),
     }
+
+    // Build index
+    let idx = index::builder::build_index(&bytes);
+
+    // Build SimpleForm from root element
+    match idx.root {
+        Some(root_idx) => {
+            let tree = term::node_to_simple_form_term(env, &idx, &bytes, root_idx);
+            Ok((atoms::ok(), tree).encode(env))
+        }
+        None => Ok((atoms::error(), "empty document").encode(env)),
+    }
+}
+
+// ============================================================================
+// Document Accumulator (Streaming SimpleForm)
+// ============================================================================
+
+/// Create a new document accumulator
+#[rustler::nif]
+fn accumulator_new() -> DocumentAccumulatorRef {
+    ResourceArc::new(resource::DocumentAccumulator::new())
+}
+
+/// Feed a chunk to the accumulator
+#[rustler::nif]
+fn accumulator_feed(acc: DocumentAccumulatorRef, chunk: Binary) -> rustler::Atom {
+    acc.feed(chunk.as_slice());
+    atoms::ok()
+}
+
+/// Validate, index, and convert accumulated data to SimpleForm
+#[rustler::nif(schedule = "DirtyCpu")]
+fn accumulator_to_simple_form<'a>(
+    env: Env<'a>,
+    acc: DocumentAccumulatorRef,
+) -> NifResult<Term<'a>> {
+    let bytes = acc.take_buffer();
+
+    // Handle encoding conversion (UTF-16 → UTF-8)
+    let bytes = match crate::core::encoding::convert_to_utf8(bytes) {
+        Ok(b) => b,
+        Err(msg) => return Ok((atoms::error(), msg).encode(env)),
+    };
+
+    // Validate strict
+    match dom::validate_strict(&bytes) {
+        Ok(()) => {}
+        Err(msg) => return Ok((atoms::error(), msg).encode(env)),
+    }
+
+    // Build index
+    let idx = index::builder::build_index(&bytes);
+
+    // Build SimpleForm from root element
+    match idx.root {
+        Some(root_idx) => {
+            let tree = term::node_to_simple_form_term(env, &idx, &bytes, root_idx);
+            Ok((atoms::ok(), tree).encode(env))
+        }
+        None => Ok((atoms::error(), "empty document").encode(env)),
+    }
+}
+
+// ============================================================================
+// SAX Parsing
+// ============================================================================
+
+/// Parse XML and return SAX events
+#[rustler::nif(schedule = "DirtyCpu")]
+fn sax_parse<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
+    use core::unified_scanner::UnifiedScanner;
+    use sax::SaxCollector;
+
+    let bytes = input.as_slice();
+
+    let mut collector = SaxCollector::new();
+    let mut scanner = UnifiedScanner::new(bytes);
+    scanner.scan(&mut collector);
+
+    let events = collector.events();
+    let attrs = collector.attributes();
+
+    let mut list = Term::list_new_empty(env);
+
+    for event in events.iter().rev() {
+        let term = sax_event_to_term(env, event, attrs, bytes);
+        list = list.list_prepend(term);
+    }
+
+    Ok(list)
+}
+
+/// Convert a SAX event to an Elixir term
+fn sax_event_to_term<'a>(
+    env: Env<'a>,
+    event: &sax::CompactSaxEvent,
+    attrs: &[(u32, u32, u32, u32)],
+    input: &[u8],
+) -> Term<'a> {
+    use sax::CompactSaxEvent;
+
+    match event.tag {
+        CompactSaxEvent::TAG_START_ELEMENT => {
+            let name = span_to_binary(env, event.offset as usize, event.len as usize, input);
+
+            let attr_start = event.tertiary as usize;
+            let attr_count = event.secondary as usize;
+            let mut attr_list = Term::list_new_empty(env);
+
+            if let Some(attr_slice) = attrs.get(attr_start..attr_start + attr_count) {
+                for &(no, nl, vo, vl) in attr_slice.iter().rev() {
+                    let attr_name = span_to_binary(env, no as usize, nl as usize, input);
+                    let attr_value = span_to_binary(env, vo as usize, vl as usize, input);
+                    attr_list = attr_list.list_prepend((attr_name, attr_value).encode(env));
+                }
+            }
+
+            (term::start_element(), name, attr_list).encode(env)
+        }
+        CompactSaxEvent::TAG_END_ELEMENT => {
+            let name = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            (term::end_element(), name).encode(env)
+        }
+        CompactSaxEvent::TAG_TEXT => {
+            let content = if event.needs_decode() {
+                let raw = &input[event.offset as usize..(event.offset + event.len) as usize];
+                let decoded = crate::core::entities::decode_text(raw);
+                match decoded {
+                    std::borrow::Cow::Borrowed(_) => {
+                        span_to_binary(env, event.offset as usize, event.len as usize, input)
+                    }
+                    std::borrow::Cow::Owned(bytes) => term::bytes_to_binary(env, &bytes),
+                }
+            } else {
+                span_to_binary(env, event.offset as usize, event.len as usize, input)
+            };
+            (term::text(), content).encode(env)
+        }
+        CompactSaxEvent::TAG_CDATA => {
+            let content = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            (term::cdata(), content).encode(env)
+        }
+        CompactSaxEvent::TAG_COMMENT => {
+            let content = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            (term::comment(), content).encode(env)
+        }
+        CompactSaxEvent::TAG_PI => {
+            let target = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            let data = if event.tertiary > 0 {
+                span_to_binary(
+                    env,
+                    event.secondary as usize,
+                    event.tertiary as usize,
+                    input,
+                )
+            } else {
+                term::bytes_to_binary(env, b"")
+            };
+            (term::processing_instruction(), target, data).encode(env)
+        }
+        _ => atoms::nil().encode(env),
+    }
+}
+
+/// Create a binary from a span in the input
+fn span_to_binary<'a>(env: Env<'a>, offset: usize, len: usize, input: &[u8]) -> Term<'a> {
+    if offset + len <= input.len() {
+        term::bytes_to_binary(env, &input[offset..offset + len])
+    } else {
+        term::bytes_to_binary(env, b"")
+    }
+}
+
+// ============================================================================
+// SAX Parsing — Saxy Format (Tier 3)
+// ============================================================================
+
+/// Parse XML and return SAX events in Saxy-compatible format
+///
+/// Events are emitted in Saxy format:
+///   {:start_element, {name, attrs}}
+///   {:end_element, name}
+///   {:characters, content}
+///   {:cdata, content}  (or {:characters, content} if cdata_as_chars)
+///
+/// Comments and PIs are skipped. Empty elements emit start+end.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn sax_parse_saxy<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    cdata_as_chars: bool,
+) -> NifResult<Term<'a>> {
+    use core::unified_scanner::UnifiedScanner;
+    use sax::SaxCollector;
+
+    let bytes = input.as_slice();
+
+    let mut collector = SaxCollector::new();
+    let mut scanner = UnifiedScanner::new(bytes);
+    scanner.scan(&mut collector);
+
+    let events = collector.events();
+    let attrs = collector.attributes();
+
+    // Forward pass to track element depth — skip document-level text
+    // (whitespace before/after root element, matching Saxy behavior)
+    let mut terms: Vec<Term<'a>> = Vec::with_capacity(events.len());
+    let mut depth: u32 = 0;
+
+    for event in events.iter() {
+        use sax::CompactSaxEvent;
+        match event.tag {
+            CompactSaxEvent::TAG_START_ELEMENT => {
+                depth += 1;
+                sax_event_to_saxy_terms(env, event, attrs, bytes, cdata_as_chars, &mut terms);
+            }
+            CompactSaxEvent::TAG_END_ELEMENT => {
+                sax_event_to_saxy_terms(env, event, attrs, bytes, cdata_as_chars, &mut terms);
+                depth = depth.saturating_sub(1);
+            }
+            CompactSaxEvent::TAG_TEXT | CompactSaxEvent::TAG_CDATA => {
+                if depth > 0 {
+                    sax_event_to_saxy_terms(env, event, attrs, bytes, cdata_as_chars, &mut terms);
+                }
+                // Skip text/cdata at document level (depth == 0)
+            }
+            _ => {
+                sax_event_to_saxy_terms(env, event, attrs, bytes, cdata_as_chars, &mut terms);
+            }
+        }
+    }
+
+    // Build list in reverse for O(1) prepend
+    let mut list = Term::list_new_empty(env);
+    for t in terms.into_iter().rev() {
+        list = list.list_prepend(t);
+    }
+
+    Ok(list)
+}
+
+/// Take events from streaming parser in Saxy-compatible format
+#[rustler::nif]
+fn streaming_take_saxy_events<'a>(
+    env: Env<'a>,
+    parser: StreamingParserRef,
+    max: usize,
+    cdata_as_chars: bool,
+) -> NifResult<Term<'a>> {
+    match parser.inner.lock() {
+        Ok(mut inner) => {
+            let events = inner.take_events(max);
+
+            // Convert OwnedXmlEvent to Saxy format
+            let mut list = Term::list_new_empty(env);
+            for event in events.into_iter().rev() {
+                owned_event_to_saxy_terms(env, event, cdata_as_chars, &mut list);
+            }
+            Ok(list)
+        }
+        Err(_) => Ok((atoms::error(), atoms::mutex_poisoned()).encode(env)),
+    }
+}
+
+/// Convert a compact SAX event to Saxy-format term(s), pushing to output vec.
+/// May push 0, 1, or 2 terms (empty elements emit start+end via the collector).
+fn sax_event_to_saxy_terms<'a>(
+    env: Env<'a>,
+    event: &sax::CompactSaxEvent,
+    attrs: &[(u32, u32, u32, u32)],
+    input: &[u8],
+    cdata_as_chars: bool,
+    out: &mut Vec<Term<'a>>,
+) {
+    use sax::CompactSaxEvent;
+
+    match event.tag {
+        CompactSaxEvent::TAG_START_ELEMENT => {
+            let name = span_to_binary(env, event.offset as usize, event.len as usize, input);
+
+            let attr_start = event.tertiary as usize;
+            let attr_count = event.secondary as usize;
+            let mut attr_list = Term::list_new_empty(env);
+
+            if let Some(attr_slice) = attrs.get(attr_start..attr_start + attr_count) {
+                for &(no, nl, vo, vl) in attr_slice.iter().rev() {
+                    let attr_name = span_to_binary(env, no as usize, nl as usize, input);
+                    let attr_value = decode_and_binary(env, input, vo as usize, vl as usize);
+                    attr_list = attr_list.list_prepend((attr_name, attr_value).encode(env));
+                }
+            }
+
+            // Saxy format: {:start_element, {name, attrs}}
+            out.push((term::start_element(), (name, attr_list)).encode(env));
+        }
+        CompactSaxEvent::TAG_END_ELEMENT => {
+            let name = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            out.push((term::end_element(), name).encode(env));
+        }
+        CompactSaxEvent::TAG_TEXT => {
+            let content = if event.needs_decode() {
+                let raw = &input[event.offset as usize..(event.offset + event.len) as usize];
+                let decoded = crate::core::entities::decode_text(raw);
+                match decoded {
+                    std::borrow::Cow::Borrowed(_) => {
+                        span_to_binary(env, event.offset as usize, event.len as usize, input)
+                    }
+                    std::borrow::Cow::Owned(bytes) => term::bytes_to_binary(env, &bytes),
+                }
+            } else {
+                span_to_binary(env, event.offset as usize, event.len as usize, input)
+            };
+            // Saxy format: {:characters, content}
+            out.push((term::characters(), content).encode(env));
+        }
+        CompactSaxEvent::TAG_CDATA => {
+            let content = span_to_binary(env, event.offset as usize, event.len as usize, input);
+            if cdata_as_chars {
+                out.push((term::characters(), content).encode(env));
+            } else {
+                out.push((term::cdata(), content).encode(env));
+            }
+        }
+        // Skip comments and PIs — Saxy doesn't emit them
+        CompactSaxEvent::TAG_COMMENT | CompactSaxEvent::TAG_PI => {}
+        _ => {}
+    }
+}
+
+/// Convert an OwnedXmlEvent to Saxy format terms, prepended to list
+fn owned_event_to_saxy_terms<'a>(
+    env: Env<'a>,
+    event: crate::strategy::streaming::OwnedXmlEvent,
+    cdata_as_chars: bool,
+    list: &mut Term<'a>,
+) {
+    use crate::strategy::streaming::OwnedXmlEvent;
+
+    match event {
+        OwnedXmlEvent::StartElement { name, attributes } => {
+            let name_term = term::bytes_to_binary(env, &name);
+            let mut attrs = Term::list_new_empty(env);
+            for (k, v) in attributes.into_iter().rev() {
+                let tuple = (
+                    term::bytes_to_binary(env, &k),
+                    term::bytes_to_binary(env, &v),
+                );
+                attrs = attrs.list_prepend(tuple.encode(env));
+            }
+            *list = list.list_prepend((term::start_element(), (name_term, attrs)).encode(env));
+        }
+        OwnedXmlEvent::EndElement { name } => {
+            let name_term = term::bytes_to_binary(env, &name);
+            *list = list.list_prepend((term::end_element(), name_term).encode(env));
+        }
+        OwnedXmlEvent::EmptyElement { name, attributes } => {
+            let name_term = term::bytes_to_binary(env, &name);
+            let mut attrs = Term::list_new_empty(env);
+            for (k, v) in attributes.into_iter().rev() {
+                let tuple = (
+                    term::bytes_to_binary(env, &k),
+                    term::bytes_to_binary(env, &v),
+                );
+                attrs = attrs.list_prepend(tuple.encode(env));
+            }
+            // Empty element → start + end
+            // Note: prepending in reverse order since we're building from the back
+            *list = list.list_prepend((term::end_element(), name_term).encode(env));
+            *list = list.list_prepend((term::start_element(), (name_term, attrs)).encode(env));
+        }
+        OwnedXmlEvent::Text(content) => {
+            *list = list.list_prepend(
+                (term::characters(), term::bytes_to_binary(env, &content)).encode(env),
+            );
+        }
+        OwnedXmlEvent::CData(content) => {
+            if cdata_as_chars {
+                *list = list.list_prepend(
+                    (term::characters(), term::bytes_to_binary(env, &content)).encode(env),
+                );
+            } else {
+                *list = list.list_prepend(
+                    (term::cdata(), term::bytes_to_binary(env, &content)).encode(env),
+                );
+            }
+        }
+        // Skip comments and PIs
+        OwnedXmlEvent::Comment(_) | OwnedXmlEvent::ProcessingInstruction { .. } => {}
+    }
+}
+
+/// Decode entities in a span and return as binary
+fn decode_and_binary<'a>(env: Env<'a>, input: &[u8], offset: usize, len: usize) -> Term<'a> {
+    if offset + len <= input.len() {
+        let raw = &input[offset..offset + len];
+        let decoded = crate::core::entities::decode_text(raw);
+        match decoded {
+            std::borrow::Cow::Borrowed(b) => term::bytes_to_binary(env, b),
+            std::borrow::Cow::Owned(bytes) => term::bytes_to_binary(env, &bytes),
+        }
+    } else {
+        term::bytes_to_binary(env, b"")
+    }
+}
+
+// ============================================================================
+// Streaming SAX Parsing (chunk-by-chunk, bounded memory)
+// ============================================================================
+
+/// Create a new streaming SAX parser
+#[rustler::nif]
+fn streaming_sax_new() -> StreamingSaxParserRef {
+    ResourceArc::new(StreamingSaxParserResource::new())
+}
+
+/// Feed a chunk and return SAX events as a compact binary.
+///
+/// Binary encoding: events are packed into a single binary instead of
+/// creating ~1,700 BEAM tuples per chunk. Elixir decodes one event at a
+/// time via binary pattern matching — only one event tuple is ever live.
+///
+/// Format:
+///   start_element: <<1, name_len::16, name, attr_count::16, [nlen::16, name, vlen::16, value]*>>
+///   end_element:   <<2, name_len::16, name>>
+///   characters:    <<3, text_len::32, text>>
+///   cdata:         <<4, text_len::32, text>>
+#[rustler::nif]
+fn streaming_feed_sax<'a>(
+    env: Env<'a>,
+    parser: StreamingSaxParserRef,
+    chunk: Binary,
+    cdata_as_chars: bool,
+) -> NifResult<Term<'a>> {
+    use core::entities::decode_text;
+    use core::tokenizer::{TokenKind, Tokenizer};
+    use strategy::streaming::find_safe_boundary;
+
+    let mut inner = parser
+        .inner
+        .lock()
+        .map_err(|_| rustler::Error::Term(Box::new(atoms::mutex_poisoned())))?;
+
+    inner.buffer.extend_from_slice(chunk.as_slice());
+
+    let boundary = find_safe_boundary(&inner.buffer);
+    if boundary == 0 {
+        return Ok(empty_binary(env));
+    }
+
+    let mut depth = inner.depth;
+    let mut buf: Vec<u8> = Vec::with_capacity(chunk.len());
+    {
+        let processable = &inner.buffer[..boundary];
+        let mut tokenizer = Tokenizer::new(processable);
+
+        while let Some(token) = tokenizer.next_token() {
+            match token.kind {
+                TokenKind::Eof => break,
+
+                TokenKind::StartTag => {
+                    depth += 1;
+                    if let Some(name) = token.name {
+                        buf.push(1);
+                        encode_bytes(&mut buf, name.as_ref());
+                        encode_attrs(&mut buf, processable, token.span);
+                    }
+                }
+
+                TokenKind::EndTag => {
+                    if let Some(name) = token.name {
+                        buf.push(2);
+                        encode_bytes(&mut buf, name.as_ref());
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                TokenKind::EmptyTag => {
+                    if let Some(name) = token.name {
+                        buf.push(1);
+                        encode_bytes(&mut buf, name.as_ref());
+                        encode_attrs(&mut buf, processable, token.span);
+                        buf.push(2);
+                        encode_bytes(&mut buf, name.as_ref());
+                    }
+                }
+
+                TokenKind::Text => {
+                    if depth > 0 {
+                        if let Some(content) = token.content {
+                            if !content.is_empty() {
+                                let decoded = decode_text(content.as_ref());
+                                buf.push(3);
+                                encode_content(&mut buf, decoded.as_ref());
+                            }
+                        }
+                    }
+                }
+
+                TokenKind::CData => {
+                    if depth > 0 {
+                        if let Some(content) = token.content {
+                            if cdata_as_chars {
+                                buf.push(3);
+                            } else {
+                                buf.push(4);
+                            }
+                            encode_content(&mut buf, content.as_ref());
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    inner.depth = depth;
+    inner.buffer.drain(..boundary);
+
+    vec_to_binary(env, &buf)
+}
+
+/// Process remaining bytes in the buffer after all chunks have been fed.
+#[rustler::nif]
+fn streaming_finalize_sax<'a>(
+    env: Env<'a>,
+    parser: StreamingSaxParserRef,
+    cdata_as_chars: bool,
+) -> NifResult<Term<'a>> {
+    use core::entities::decode_text;
+    use core::tokenizer::{TokenKind, Tokenizer};
+
+    let mut inner = parser
+        .inner
+        .lock()
+        .map_err(|_| rustler::Error::Term(Box::new(atoms::mutex_poisoned())))?;
+
+    if inner.buffer.is_empty() {
+        return Ok(empty_binary(env));
+    }
+
+    let remaining = std::mem::take(&mut inner.buffer);
+    let mut depth = inner.depth;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tokenizer = Tokenizer::new(&remaining);
+
+    while let Some(token) = tokenizer.next_token() {
+        match token.kind {
+            TokenKind::Eof => break,
+
+            TokenKind::StartTag => {
+                depth += 1;
+                if let Some(name) = token.name {
+                    buf.push(1);
+                    encode_bytes(&mut buf, name.as_ref());
+                    encode_attrs(&mut buf, &remaining, token.span);
+                }
+            }
+
+            TokenKind::EndTag => {
+                if let Some(name) = token.name {
+                    buf.push(2);
+                    encode_bytes(&mut buf, name.as_ref());
+                }
+                depth = depth.saturating_sub(1);
+            }
+
+            TokenKind::EmptyTag => {
+                if let Some(name) = token.name {
+                    buf.push(1);
+                    encode_bytes(&mut buf, name.as_ref());
+                    encode_attrs(&mut buf, &remaining, token.span);
+                    buf.push(2);
+                    encode_bytes(&mut buf, name.as_ref());
+                }
+            }
+
+            TokenKind::Text => {
+                if depth > 0 {
+                    if let Some(content) = token.content {
+                        if !content.is_empty() {
+                            let decoded = decode_text(content.as_ref());
+                            buf.push(3);
+                            encode_content(&mut buf, decoded.as_ref());
+                        }
+                    }
+                }
+            }
+
+            TokenKind::CData => {
+                if depth > 0 {
+                    if let Some(content) = token.content {
+                        if cdata_as_chars {
+                            buf.push(3);
+                        } else {
+                            buf.push(4);
+                        }
+                        encode_content(&mut buf, content.as_ref());
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    inner.depth = depth;
+
+    vec_to_binary(env, &buf)
+}
+
+// --- Binary encoding helpers ---
+
+/// Encode a name/short string: <<len::16, bytes>>
+#[inline]
+fn encode_bytes(buf: &mut Vec<u8>, data: &[u8]) {
+    buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    buf.extend_from_slice(data);
+}
+
+/// Encode text content: <<len::32, bytes>>
+#[inline]
+fn encode_content(buf: &mut Vec<u8>, data: &[u8]) {
+    buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    buf.extend_from_slice(data);
+}
+
+/// Encode attributes from a tag span into the buffer.
+fn encode_attrs(buf: &mut Vec<u8>, input: &[u8], span: (usize, usize)) {
+    use core::attributes::parse_attributes;
+
+    let (start, end) = span;
+    if end <= start || end > input.len() {
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        return;
+    }
+
+    let tag_content = &input[start..end];
+
+    // Skip '<' and optional '/' or '?'
+    let mut pos = 1;
+    if tag_content.get(1) == Some(&b'/') || tag_content.get(1) == Some(&b'?') {
+        pos = 2;
+    }
+
+    // Skip tag name
+    while pos < tag_content.len() {
+        let b = tag_content[pos];
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'>' || b == b'/' {
+            break;
+        }
+        pos += 1;
+    }
+
+    // Find end of attributes
+    let mut attr_end = tag_content.len();
+    if tag_content.ends_with(b"/>") || tag_content.ends_with(b"?>") {
+        attr_end -= 2;
+    } else if tag_content.ends_with(b">") {
+        attr_end -= 1;
+    }
+
+    if pos >= attr_end {
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        return;
+    }
+
+    let attrs = parse_attributes(&tag_content[pos..attr_end]);
+    buf.extend_from_slice(&(attrs.len() as u16).to_be_bytes());
+    for attr in &attrs {
+        encode_bytes(buf, attr.name.as_ref());
+        encode_bytes(buf, attr.value.as_ref());
+    }
+}
+
+/// Convert a Vec<u8> to a BEAM binary term.
+#[inline]
+fn vec_to_binary<'a>(env: Env<'a>, data: &[u8]) -> NifResult<Term<'a>> {
+    let mut owned = rustler::OwnedBinary::new(data.len())
+        .ok_or_else(|| rustler::Error::Term(Box::new("alloc_failed")))?;
+    owned.as_mut_slice().copy_from_slice(data);
+    Ok(owned.release(env).encode(env))
+}
+
+/// Return an empty BEAM binary.
+#[inline]
+fn empty_binary<'a>(env: Env<'a>) -> Term<'a> {
+    let owned = rustler::OwnedBinary::new(0).unwrap();
+    owned.release(env).encode(env)
 }
 
 // ============================================================================

@@ -1,26 +1,31 @@
-//! DOM Module - Arena-based XML Document
+//! DOM Module - Core types and traits for XML document access
 //!
-//! Implements an efficient DOM representation using:
-//! - Arena allocation for nodes
-//! - NodeId (u32) indices for cache-friendly traversal
-//! - String interning for element/attribute names
-//! - Namespace resolution stack
+//! Provides:
+//! - `DocumentAccess` trait: enables XPath on both DOM and indexed documents
+//! - `NodeId`, `NodeKind`: compact node representation
+//! - `XmlNode`, `XmlAttribute`: node types (used by trait interface)
+//! - `validate_strict`: well-formedness validation
+//! - `XmlDocument`: full DOM (test-only, used by XPath unit tests)
 
 pub mod document;
-pub mod namespace;
 pub mod node;
 pub mod strings;
 
-pub use document::{OwnedXmlDocument, XmlDocument, XmlDocumentView};
-pub use node::{NodeId, NodeKind, XmlAttribute, XmlNode};
-pub use strings::StringPool;
+pub use document::validate_strict;
+#[cfg(test)]
+pub use node::XmlAttribute;
+pub use node::{NodeId, NodeKind, XmlNode};
 
-/// Trait for document access - enables XPath to work with both XmlDocument and XmlDocumentView
+#[cfg(test)]
+pub use document::XmlDocument;
+
+/// Trait for document access - enables XPath to work with DOM and Index-based documents
 pub trait DocumentAccess {
     /// Get root element ID
     fn root_element_id(&self) -> Option<NodeId>;
 
     /// Get a node by ID
+    /// NOTE: Returns None for index-based views. Used by default navigation impls.
     fn get_node(&self, id: NodeId) -> Option<&XmlNode>;
 
     /// Get node name as string
@@ -32,21 +37,46 @@ pub trait DocumentAccess {
     /// Get text content of a text node
     fn text_content(&self, id: NodeId) -> Option<&str>;
 
-    /// Get attributes for an element
-    fn attributes(&self, id: NodeId) -> &[XmlAttribute];
-
     /// Get attribute value by name
     fn get_attribute(&self, node_id: NodeId, name: &str) -> Option<&str>;
 
     /// Get all attribute names and values
     fn get_attribute_values(&self, node_id: NodeId) -> Vec<(&str, &str)>;
 
-    /// Get the string pool for direct access
-    fn strings(&self) -> &StringPool;
-
     /// Iterate over children - returns collected Vec for trait object compatibility
     fn children_vec(&self, id: NodeId) -> Vec<NodeId>;
 
     /// Iterate over descendants - returns collected Vec for trait object compatibility
     fn descendants_vec(&self, id: NodeId) -> Vec<NodeId>;
+
+    // === Navigation methods for XPath axes ===
+    // These work with both DOM and Index-based views
+
+    /// Get parent node ID
+    fn parent_of(&self, id: NodeId) -> Option<NodeId> {
+        self.get_node(id).and_then(|n| n.parent)
+    }
+
+    /// Get next sibling node ID
+    fn next_sibling_of(&self, id: NodeId) -> Option<NodeId> {
+        self.get_node(id).and_then(|n| n.next_sibling)
+    }
+
+    /// Get previous sibling node ID
+    fn prev_sibling_of(&self, id: NodeId) -> Option<NodeId> {
+        self.get_node(id).and_then(|n| n.prev_sibling)
+    }
+
+    /// Get node kind
+    fn node_kind_of(&self, id: NodeId) -> NodeKind {
+        self.get_node(id)
+            .map(|n| n.kind)
+            .unwrap_or(NodeKind::Element)
+    }
+
+    /// Get the document node ID (for XPath absolute paths)
+    /// Default implementation returns 0 (for DOM-based documents)
+    fn document_node_id(&self) -> NodeId {
+        0
+    }
 }

@@ -24,6 +24,8 @@ pub struct StreamingParser {
     tag_filter: Option<Vec<u8>>,
     /// Depth when we entered a target element (0 = not inside target)
     inside_target_depth: usize,
+    /// Skip event generation (when only complete_elements are needed)
+    elements_only: bool,
 }
 
 /// Builder for capturing complete elements
@@ -59,6 +61,53 @@ pub enum OwnedXmlEvent {
     },
 }
 
+/// Find a safe boundary in a buffer (last `>` not inside quotes).
+///
+/// Returns the byte offset just past the last valid `>`, or 0 if none found.
+/// Shared by `StreamingParser::process_buffer` and the streaming SAX NIFs.
+pub fn find_safe_boundary(buf: &[u8]) -> usize {
+    let len = buf.len();
+
+    if len < 1024 {
+        // Single-pass: scan once, track quotes, find last valid '>'
+        let mut last_valid_gt = 0;
+        let mut in_single = false;
+        let mut in_double = false;
+
+        for (i, &b) in buf.iter().enumerate() {
+            match b {
+                b'"' if !in_single => in_double = !in_double,
+                b'\'' if !in_double => in_single = !in_single,
+                b'>' if !in_single && !in_double => last_valid_gt = i + 1,
+                _ => {}
+            }
+        }
+        last_valid_gt
+    } else {
+        // For large buffers, use memchr SIMD to find '>' positions
+        let mut last_valid_gt = 0;
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut pos = 0;
+
+        for gt_pos in memchr_iter(b'>', buf) {
+            for &b in &buf[pos..gt_pos] {
+                match b {
+                    b'"' if !in_single => in_double = !in_double,
+                    b'\'' if !in_double => in_single = !in_single,
+                    _ => {}
+                }
+            }
+            pos = gt_pos + 1;
+
+            if !in_single && !in_double {
+                last_valid_gt = gt_pos + 1;
+            }
+        }
+        last_valid_gt
+    }
+}
+
 impl StreamingParser {
     /// Create a new streaming parser
     pub fn new() -> Self {
@@ -71,20 +120,24 @@ impl StreamingParser {
             depth: 0,
             tag_filter: None,
             inside_target_depth: 0,
+            elements_only: false,
         }
     }
 
-    /// Create a new streaming parser with a tag filter
+    /// Create a new streaming parser with a tag filter.
+    /// Uses elements-only mode: skips event generation since the fast path
+    /// (take_elements) provides complete XML strings without needing events.
     pub fn with_filter(tag: &[u8]) -> Self {
         StreamingParser {
             buffer: Vec::with_capacity(8192),
-            events: Vec::with_capacity(64),
+            events: Vec::new(),
             complete_elements: Vec::with_capacity(16),
             element_builder: None,
             in_quote: false,
             depth: 0,
             tag_filter: Some(tag.to_vec()),
             inside_target_depth: 0,
+            elements_only: true,
         }
     }
 
@@ -151,8 +204,8 @@ impl StreamingParser {
                             });
                         }
 
-                        // Emit event if we're inside a target element (for backwards compat)
-                        if self.inside_target_depth > 0 {
+                        // Emit event if we're inside a target element (skip in elements_only mode)
+                        if !self.elements_only && self.inside_target_depth > 0 {
                             let attrs = self.extract_attributes_from_buffer(boundary, token.span);
                             self.events.push(OwnedXmlEvent::StartElement {
                                 name: name_bytes,
@@ -166,8 +219,8 @@ impl StreamingParser {
                     if let Some(name) = token.name {
                         let name_bytes = name.into_owned();
 
-                        // Emit event if we're inside a target element
-                        if self.inside_target_depth > 0 {
+                        // Emit event if we're inside a target element (skip in elements_only mode)
+                        if !self.elements_only && self.inside_target_depth > 0 {
                             self.events
                                 .push(OwnedXmlEvent::EndElement { name: name_bytes });
                         }
@@ -208,7 +261,9 @@ impl StreamingParser {
                         }
 
                         // Emit event if inside target OR if this IS a target empty element
-                        if self.inside_target_depth > 0 || is_target_at_top {
+                        // (skip in elements_only mode)
+                        if !self.elements_only && (self.inside_target_depth > 0 || is_target_at_top)
+                        {
                             let attrs = self.extract_attributes_from_buffer(boundary, token.span);
                             self.events.push(OwnedXmlEvent::EmptyElement {
                                 name: name_bytes,
@@ -219,8 +274,8 @@ impl StreamingParser {
                 }
 
                 TokenKind::Text => {
-                    // Only emit text if inside a target element
-                    if self.inside_target_depth > 0 {
+                    // Only emit text if inside a target element (skip in elements_only mode)
+                    if !self.elements_only && self.inside_target_depth > 0 {
                         if let Some(content) = token.content {
                             let bytes = content.into_owned();
                             // Preserve all text including whitespace-only for XML compliance
@@ -232,7 +287,7 @@ impl StreamingParser {
                 }
 
                 TokenKind::CData => {
-                    if self.inside_target_depth > 0 {
+                    if !self.elements_only && self.inside_target_depth > 0 {
                         if let Some(content) = token.content {
                             self.events.push(OwnedXmlEvent::CData(content.into_owned()));
                         }
@@ -240,7 +295,7 @@ impl StreamingParser {
                 }
 
                 TokenKind::Comment => {
-                    if self.inside_target_depth > 0 {
+                    if !self.elements_only && self.inside_target_depth > 0 {
                         if let Some(content) = token.content {
                             self.events
                                 .push(OwnedXmlEvent::Comment(content.into_owned()));
@@ -262,56 +317,9 @@ impl StreamingParser {
         self.extract_attributes(&self.buffer[..boundary], span)
     }
 
-    /// Find a safe boundary in the buffer (complete element)
-    /// Single-pass algorithm: track quotes while scanning for '>'
-    /// Falls back to memchr for large buffers where SIMD wins
+    /// Find a safe boundary in the buffer (delegates to standalone fn)
     fn find_safe_boundary(&self) -> usize {
-        let buf = &self.buffer;
-        let len = buf.len();
-
-        // For small buffers, single-pass is faster (no function call overhead)
-        // For large buffers, memchr SIMD is faster despite the extra quote scanning
-        if len < 1024 {
-            // Single-pass: scan once, track quotes, find last valid '>'
-            let mut last_valid_gt = 0;
-            let mut in_single = false;
-            let mut in_double = false;
-
-            for (i, &b) in buf.iter().enumerate() {
-                match b {
-                    b'"' if !in_single => in_double = !in_double,
-                    b'\'' if !in_double => in_single = !in_single,
-                    b'>' if !in_single && !in_double => last_valid_gt = i + 1,
-                    _ => {}
-                }
-            }
-            last_valid_gt
-        } else {
-            // For large buffers, use memchr SIMD to find '>' positions
-            // then only scan the necessary bytes for quote context
-            let mut last_valid_gt = 0;
-            let mut in_single = false;
-            let mut in_double = false;
-            let mut pos = 0;
-
-            for gt_pos in memchr_iter(b'>', buf) {
-                // Scan from last position to this '>' to track quote state
-                for &b in &buf[pos..gt_pos] {
-                    match b {
-                        b'"' if !in_single => in_double = !in_double,
-                        b'\'' if !in_double => in_single = !in_single,
-                        _ => {}
-                    }
-                }
-                pos = gt_pos + 1;
-
-                // If we're not in quotes, this is a valid boundary
-                if !in_single && !in_double {
-                    last_valid_gt = gt_pos + 1;
-                }
-            }
-            last_valid_gt
-        }
+        find_safe_boundary(&self.buffer)
     }
 
     /// Check if this is a target tag we're looking for
@@ -474,12 +482,11 @@ mod tests {
         let mut parser = StreamingParser::with_filter(b"item");
         parser.feed(b"<root><item/><other/><item/></root>");
 
-        let events = parser.take_events(10);
-        // Should only have item events
-        for event in &events {
-            if let OwnedXmlEvent::EmptyElement { name, .. } = event {
-                assert_eq!(name, b"item");
-            }
-        }
+        // with_filter uses elements_only mode (no events generated)
+        let elements = parser.take_elements(10);
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0], b"<item/>");
+        assert_eq!(elements[1], b"<item/>");
+        assert_eq!(parser.available_events(), 0);
     }
 }
