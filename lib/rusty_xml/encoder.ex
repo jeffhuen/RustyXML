@@ -1,5 +1,10 @@
 defmodule RustyXML.Encoder do
-  @moduledoc false
+  @moduledoc """
+  Encodes XML element trees to strings or iodata.
+
+  This is the Saxy-compatible encoding module used by `RustyXML.encode!/2`
+  and `encode_to_iodata/2`.
+  """
 
   @doc """
   Encode an XML element tree to a string. Raises on errors.
