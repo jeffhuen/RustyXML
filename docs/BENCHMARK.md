@@ -11,6 +11,11 @@ Performance comparisons against SweetXml/xmerl.
 - **SweetXml**: 0.7.5
 - **NIF memory tracking**: enabled
 
+> **Variance:** Throughput numbers vary ±15% between runs on the same hardware
+> depending on thermal state, background load, and GC timing. Speedup ratios
+> (RustyXML vs baseline) are more stable than absolute ips. Streaming memory
+> measurements use `:erlang.memory(:total)` deltas and can vary ±30%.
+
 ## Parsing Performance
 
 RustyXML's structural index uses SIMD-accelerated scanning (`memchr`) and zero-copy spans. Gains increase with document size.
@@ -134,14 +139,16 @@ RustyXML also serves as a drop-in Saxy replacement. SAX parsing benchmarks again
 
 ### SAX Parse Performance
 
+Measured on Apple Silicon M1 Pro. Throughput varies ±15% between runs; speedup ratios are more stable.
+
 | Operation | XML Size | RustyXML | Saxy | Speedup |
 |-----------|----------|----------|------|---------|
-| `parse_string/4` | 14.6 KB | 8.41K ips | 6.41K ips | **1.31x** |
-| `parse_string/4` | 290.6 KB | 437 ips | 311 ips | **1.41x** |
-| `parse_string/4` | 2.93 MB | 41.9 ips | 24.4 ips | **1.72x** |
-| `SimpleForm` | 14.6 KB | 6.15K ips | 4.49K ips | **1.37x** |
-| `SimpleForm` | 290.6 KB | 329 ips | 214 ips | **1.54x** |
-| `parse_stream/4` | 2.93 MB | 40.7 ips | 23.9 ips | **1.7x** |
+| `parse_string/4` | 14.6 KB | ~8.5K ips | ~6.5K ips | **~1.3x** |
+| `parse_string/4` | 290.6 KB | ~435 ips | ~320 ips | **~1.4x** |
+| `parse_string/4` | 2.93 MB | ~40 ips | ~25 ips | **~1.6x** |
+| `SimpleForm` | 14.6 KB | ~6.1K ips | ~4.7K ips | **~1.3x** |
+| `SimpleForm` | 290.6 KB | ~330 ips | ~215 ips | **~1.5x** |
+| `parse_stream/4` | 2.93 MB | ~41 ips | ~23 ips | **~1.8x** |
 
 ### SAX Memory
 
@@ -150,12 +157,13 @@ RustyXML also serves as a drop-in Saxy replacement. SAX parsing benchmarks again
 | `parse_string/4` | 14.6 KB | 127 KB | 308 KB | **0.41x** |
 | `parse_string/4` | 2.93 MB | 26.4 MB | 59.6 MB | **0.44x** |
 | `SimpleForm` | 290.6 KB | 1.43 MB | 10.7 MB | **0.13x** |
-| `parse_stream/4` | 2.93 MB | 128 KB | 124 KB | **1.03x** |
+| `parse_stream/4` | 2.93 MB | ~130–162 KB | ~124–133 KB | **~1x** |
 
 `parse_stream` memory is comparable: both parsers operate in bounded memory.
 RustyXML uses zero-copy tokenization and direct BEAM binary encoding to keep
-the NIF peak at ~67 KB; combined with ~61 KB BEAM allocation, the total is
-roughly equivalent to Saxy's pure-BEAM ~124 KB.
+the NIF peak at ~67 KB. Streaming memory measurements use `:erlang.memory(:total)`
+deltas which are noisier than Benchee's per-process tracing — expect ±30%
+variance between runs on the same hardware.
 
 ## Summary
 
@@ -203,7 +211,7 @@ roughly equivalent to Saxy's pure-BEAM ~124 KB.
 
 1. **Parsing is 8-72x faster than SweetXml** — The structural index with SIMD scanning dramatically outperforms xmerl, with gains increasing on larger documents.
 
-2. **SAX parsing is 1.3-1.8x faster than Saxy** — with comparable streaming memory (~128 KB vs ~124 KB). This is the fairest streaming comparison since both parsers are properly bounded.
+2. **SAX parsing is ~1.3-1.8x faster than Saxy** — with comparable streaming memory. This is the fairest streaming comparison since both parsers are properly bounded.
 
 3. **All XPath queries are faster** — Full elements (1.48x), text (2.0x), attributes (1.7x), predicates (3.65x), counts (2.8x) vs SweetXml.
 

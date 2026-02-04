@@ -549,9 +549,9 @@ RustyXML.SimpleForm.parse_string(xml)      # was: Saxy.SimpleForm.parse_string(.
 See [BENCHMARK.md](BENCHMARK.md) for detailed performance comparisons.
 
 **vs Saxy (fairest comparison — both are properly bounded streaming parsers):**
-- **SAX parsing**: 1.3-1.8x faster
-- **SimpleForm**: 1.4-1.5x faster
-- **Streaming memory**: comparable (~128 KB vs ~124 KB)
+- **SAX parsing**: ~1.3-1.8x faster
+- **SimpleForm**: ~1.3-1.5x faster
+- **Streaming memory**: comparable (~130 KB vs ~125 KB; varies between runs)
 
 **vs SweetXml/xmerl:**
 - **Parsing**: 8-72x faster

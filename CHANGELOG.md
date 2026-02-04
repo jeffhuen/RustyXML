@@ -28,14 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance vs Saxy
 
+Measured on Apple Silicon M1 Pro. Numbers vary between runs; treat as representative.
+
 | Operation | Speedup | Memory |
 |-----------|---------|--------|
-| `parse_string/4` (14.6 KB) | **1.31x faster** | **2.4x less** |
-| `parse_string/4` (2.93 MB) | **1.72x faster** | **2.3x less** |
-| `SimpleForm` (290 KB) | **1.54x faster** | **7.7x less** |
-| `parse_stream/4` (2.93 MB) | **1.7x faster** | 3.5x more* |
+| `parse_string/4` (14.6 KB) | **~1.3x faster** | **~2.4x less** |
+| `parse_string/4` (2.93 MB) | **~1.6x faster** | **~2.3x less** |
+| `SimpleForm` (290 KB) | **~1.5x faster** | **~7x less** |
+| `parse_stream/4` (2.93 MB) | **~1.8x faster** | **~1x** (comparable) |
 
-\* `parse_stream` uses more memory due to NIF buffer retention; under investigation.
+Streaming memory is bounded on both sides (~128–162 KB vs ~124–133 KB).
 
 ### Migration
 
