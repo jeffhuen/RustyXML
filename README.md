@@ -20,7 +20,7 @@
 
 ```elixir
 def deps do
-  [{:rusty_xml, "~> 0.2.0"}]
+  [{:rusty_xml, "~> 0.2.1"}]
 end
 ```
 

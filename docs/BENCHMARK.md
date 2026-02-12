@@ -7,7 +7,7 @@ Performance comparisons against SweetXml/xmerl.
 - **Elixir**: 1.19.4
 - **OTP**: 28
 - **Hardware**: Apple Silicon M1 Pro (10 cores)
-- **RustyXML**: 0.2.0
+- **RustyXML**: 0.2.1
 - **SweetXml**: 0.7.5
 - **NIF memory tracking**: enabled
 

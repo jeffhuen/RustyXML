@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-11
+
+### Fixed
+
+- **Alpine/musl compatibility** — added `local_dynamic_tls` feature to `mimalloc`
+  to ensure correct thread-local storage handling when loaded as a dynamic library
+  (NIF) on Alpine Linux and other musl-based distributions.
+
 ## [0.2.0] - 2026-02-04
 
 ### Added
