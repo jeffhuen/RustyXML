@@ -140,8 +140,7 @@ fn fn_name<D: DocumentAccess>(
 }
 
 fn fn_id(_args: Vec<XPathValue>) -> Result<XPathValue, String> {
-    // TODO: implement id() lookup
-    Ok(XPathValue::NodeSet(Vec::new()))
+    Err("id() is not supported: DTD processing is disabled for security (XXE prevention)".to_string())
 }
 
 // String Functions
@@ -483,6 +482,26 @@ mod tests {
         let result = fn_id(vec![XPathValue::String("foo".to_string())]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn lang_matches_xml_lang_attribute() {
+        let doc = XmlDocument::parse(b"<root xml:lang=\"en\"><child/></root>");
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let child = children[0];
+        let result = call("lang", vec![XPathValue::String("en".to_string())], &doc, child, 1, 1).unwrap();
+        assert!(result.to_boolean(), "lang('en') should match xml:lang='en' on ancestor");
+    }
+
+    #[test]
+    fn lang_matches_subtag_prefix() {
+        let doc = XmlDocument::parse(b"<root xml:lang=\"en-US\"><child/></root>");
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let child = children[0];
+        let result = call("lang", vec![XPathValue::String("en".to_string())], &doc, child, 1, 1).unwrap();
+        assert!(result.to_boolean(), "lang('en') should match xml:lang='en-US'");
     }
 
     #[test]
