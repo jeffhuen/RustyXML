@@ -193,9 +193,15 @@ fn attribute_axis<D: DocumentAccess>(doc: &D, _context: NodeId) -> Vec<NodeId> {
 }
 
 /// namespace:: axis - namespace nodes
+///
+/// The namespace axis requires returning namespace nodes — a node type that
+/// doesn't exist in our `NodeKind` enum or `NodeId` encoding scheme. Adding
+/// a third node type would require changes to the ID encoding, `NodeKind`,
+/// and many downstream consumers. This is deferred.
+///
+/// Users who need namespace information should use the `namespace-uri()`
+/// function instead.
 fn namespace_axis<D: DocumentAccess>(doc: &D, _context: NodeId) -> Vec<NodeId> {
-    // Namespace nodes are not commonly used and complex to implement
-    // Return empty for now
     let _ = doc;
     Vec::new()
 }
@@ -286,5 +292,17 @@ mod tests {
         let b = a_children[0];
         let ancestors = ancestor_axis(&doc, b);
         assert_eq!(ancestors.len(), 3); // a, root, document
+    }
+
+    #[test]
+    fn test_namespace_axis_returns_empty() {
+        // The namespace axis requires namespace node types not in our node model.
+        // Returns empty — use namespace-uri() for namespace information.
+        let doc = XmlDocument::parse(
+            b"<root xmlns:ns=\"http://example.com\"><ns:child/></root>",
+        );
+        let root = doc.root_element_id().unwrap();
+        let result = namespace_axis(&doc, root);
+        assert!(result.is_empty());
     }
 }
