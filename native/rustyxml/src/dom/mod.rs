@@ -32,6 +32,9 @@ pub trait DocumentAccess {
     /// Get node local name (without prefix)
     fn node_local_name(&self, id: NodeId) -> Option<&str>;
 
+    /// Get namespace URI of a node (None if unavailable or no namespace)
+    fn node_namespace_uri(&self, id: NodeId) -> Option<&str>;
+
     /// Get text content of a text node
     fn text_content(&self, id: NodeId) -> Option<&str>;
 

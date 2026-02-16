@@ -251,9 +251,8 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                 stack.push(XPathValue::String(s.clone()));
             }
 
-            Op::Variable(_name) => {
-                // TODO: variable lookup
-                stack.push(XPathValue::String(String::new()));
+            Op::Variable(name) => {
+                return Err(format!("Variable references (${}) are not supported", name));
             }
 
             Op::Negate => {
@@ -491,6 +490,14 @@ mod tests {
             result.to_boolean(),
             "contains() should work with NodeSet first arg"
         );
+    }
+
+    #[test]
+    fn variable_reference_returns_error() {
+        let doc = XmlDocument::parse(b"<r/>");
+        let result = evaluate(&doc, "$myvar");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
     }
 
     #[test]

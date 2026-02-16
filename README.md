@@ -172,6 +172,12 @@ RustyXML.encode!(doc)
 **Number Functions:**
 - `number()`, `sum()`, `floor()`, `ceiling()`, `round()`
 
+### Known Limitations
+
+- **`id()`** — Not supported. Returns an error. RustyXML disables DTD processing for security (XXE prevention), and `id()` requires DTD-declared ID attributes to function.
+- **`$variable`** — Variable references are not supported. Returns an error. Variables are primarily an XSLT feature; standalone XPath evaluation does not define a variable binding mechanism.
+- **Namespace axis** — Returns empty. The namespace axis requires namespace node types not present in the node model. Use `namespace-uri()` for namespace information.
+
 ## API Reference
 
 ### Core Functions

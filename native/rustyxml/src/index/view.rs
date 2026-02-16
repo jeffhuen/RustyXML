@@ -138,6 +138,11 @@ impl<'a> DocumentAccess for IndexedDocumentView<'a> {
         }
     }
 
+    fn node_namespace_uri(&self, _id: NodeId) -> Option<&str> {
+        // Namespace resolution deferred for indexed documents
+        None
+    }
+
     fn text_content(&self, id: NodeId) -> Option<&str> {
         let (is_text, idx) = decode_node_id(id);
         if is_text {

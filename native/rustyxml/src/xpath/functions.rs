@@ -57,7 +57,7 @@ pub fn call<D: DocumentAccess>(
         "not" => fn_not(args),
         "true" => Ok(XPathValue::Boolean(true)),
         "false" => Ok(XPathValue::Boolean(false)),
-        "lang" => fn_lang(args),
+        "lang" => fn_lang(args, doc, context),
 
         // Number Functions
         "number" => fn_number(args, doc, context),
@@ -102,12 +102,22 @@ fn fn_local_name<D: DocumentAccess>(
 }
 
 fn fn_namespace_uri<D: DocumentAccess>(
-    _args: Vec<XPathValue>,
-    _doc: &D,
-    _context: NodeId,
+    args: Vec<XPathValue>,
+    doc: &D,
+    context: NodeId,
 ) -> Result<XPathValue, String> {
-    // TODO: implement namespace resolution
-    Ok(XPathValue::String(String::new()))
+    let node = if args.is_empty() {
+        context
+    } else {
+        match &args[0] {
+            XPathValue::NodeSet(nodes) if !nodes.is_empty() => nodes[0],
+            XPathValue::NodeSet(_) => return Ok(XPathValue::String(String::new())),
+            _ => return Err("namespace-uri() argument must be a node-set".to_string()),
+        }
+    };
+
+    let uri = doc.node_namespace_uri(node).unwrap_or("");
+    Ok(XPathValue::String(uri.to_string()))
 }
 
 fn fn_name<D: DocumentAccess>(
@@ -130,8 +140,10 @@ fn fn_name<D: DocumentAccess>(
 }
 
 fn fn_id(_args: Vec<XPathValue>) -> Result<XPathValue, String> {
-    // TODO: implement id() lookup
-    Ok(XPathValue::NodeSet(Vec::new()))
+    Err(
+        "id() is not supported: DTD processing is disabled for security (XXE prevention)"
+            .to_string(),
+    )
 }
 
 // String Functions
@@ -308,8 +320,35 @@ fn fn_not(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::Boolean(!args[0].to_boolean()))
 }
 
-fn fn_lang(_args: Vec<XPathValue>) -> Result<XPathValue, String> {
-    // TODO: implement lang() with xml:lang attribute checking
+fn fn_lang<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+    context: NodeId,
+) -> Result<XPathValue, String> {
+    if args.len() != 1 {
+        return Err("lang() requires exactly 1 argument".to_string());
+    }
+    let target_lang = args[0].to_string_value().to_lowercase();
+
+    // Walk up ancestor chain looking for xml:lang attribute
+    let mut node = context;
+    loop {
+        if let Some(lang_val) = doc.get_attribute(node, "xml:lang") {
+            let lang_lower = lang_val.to_lowercase();
+            // Exact match or subtag prefix match (e.g., "en" matches "en-US")
+            if lang_lower == target_lang
+                || (lang_lower.starts_with(&target_lang)
+                    && lang_lower.as_bytes().get(target_lang.len()) == Some(&b'-'))
+            {
+                return Ok(XPathValue::Boolean(true));
+            }
+            return Ok(XPathValue::Boolean(false));
+        }
+        match doc.parent_of(node) {
+            Some(parent) => node = parent,
+            None => break,
+        }
+    }
     Ok(XPathValue::Boolean(false))
 }
 
@@ -443,5 +482,64 @@ mod tests {
         let args = vec![XPathValue::String("  hello   world  ".to_string())];
         let result = fn_normalize_space(args, &doc, 0).unwrap();
         assert_eq!(result.to_string_value(), "hello world");
+    }
+
+    #[test]
+    fn id_returns_explicit_error() {
+        let result = fn_id(vec![XPathValue::String("foo".to_string())]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn lang_matches_xml_lang_attribute() {
+        let doc = XmlDocument::parse(b"<root xml:lang=\"en\"><child/></root>");
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let child = children[0];
+        let result = call(
+            "lang",
+            vec![XPathValue::String("en".to_string())],
+            &doc,
+            child,
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(
+            result.to_boolean(),
+            "lang('en') should match xml:lang='en' on ancestor"
+        );
+    }
+
+    #[test]
+    fn lang_matches_subtag_prefix() {
+        let doc = XmlDocument::parse(b"<root xml:lang=\"en-US\"><child/></root>");
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let child = children[0];
+        let result = call(
+            "lang",
+            vec![XPathValue::String("en".to_string())],
+            &doc,
+            child,
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(
+            result.to_boolean(),
+            "lang('en') should match xml:lang='en-US'"
+        );
+    }
+
+    #[test]
+    fn namespace_uri_returns_uri_for_prefixed_element() {
+        let doc = XmlDocument::parse(b"<root xmlns:ns=\"http://example.com\"><ns:child/></root>");
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let child = children[0];
+        let result = fn_namespace_uri(vec![XPathValue::NodeSet(vec![child])], &doc, child).unwrap();
+        assert_eq!(result.to_string_value(), "http://example.com");
     }
 }
