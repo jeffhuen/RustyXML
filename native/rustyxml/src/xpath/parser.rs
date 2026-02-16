@@ -159,10 +159,12 @@ impl<'a> Parser<'a> {
         if self.peeked.is_none() {
             self.peeked = Some(self.lexer.next_token());
         }
-        // Safe: the if-branch above guarantees peeked is Some
-        self.peeked
-            .as_ref()
-            .expect("peeked guaranteed Some by preceding assignment")
+        // Structurally guaranteed Some by the if-branch above.
+        // Match instead of expect() to avoid panicking in NIF paths.
+        match self.peeked.as_ref() {
+            Some(token) => token,
+            None => &Token::Eof,
+        }
     }
 
     /// Parse expression (handles union)

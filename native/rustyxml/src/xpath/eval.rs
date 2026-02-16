@@ -9,7 +9,7 @@ use super::parser::BinaryOp;
 use super::value::XPathValue;
 #[cfg(test)]
 use crate::dom::XmlDocument;
-use crate::dom::{DocumentAccess, NodeId};
+use crate::dom::{self, DocumentAccess, NodeId};
 use std::collections::HashSet;
 
 /// Evaluation context - generic over document type
@@ -270,10 +270,10 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                     BinaryOp::And => XPathValue::Boolean(left.to_boolean() && right.to_boolean()),
                     BinaryOp::Eq => compare_values(ctx.doc, &left, &right, |a, b| a == b),
                     BinaryOp::NotEq => compare_values(ctx.doc, &left, &right, |a, b| a != b),
-                    BinaryOp::Lt => compare_numbers(&left, &right, |a, b| a < b),
-                    BinaryOp::LtEq => compare_numbers(&left, &right, |a, b| a <= b),
-                    BinaryOp::Gt => compare_numbers(&left, &right, |a, b| a > b),
-                    BinaryOp::GtEq => compare_numbers(&left, &right, |a, b| a >= b),
+                    BinaryOp::Lt => compare_numbers(ctx.doc, &left, &right, |a, b| a < b),
+                    BinaryOp::LtEq => compare_numbers(ctx.doc, &left, &right, |a, b| a <= b),
+                    BinaryOp::Gt => compare_numbers(ctx.doc, &left, &right, |a, b| a > b),
+                    BinaryOp::GtEq => compare_numbers(ctx.doc, &left, &right, |a, b| a >= b),
                     BinaryOp::Add => XPathValue::Number(left.to_number() + right.to_number()),
                     BinaryOp::Sub => XPathValue::Number(left.to_number() - right.to_number()),
                     BinaryOp::Mul => XPathValue::Number(left.to_number() * right.to_number()),
@@ -367,12 +367,40 @@ where
     }
 }
 
-/// Compare two values as numbers
-fn compare_numbers<F>(left: &XPathValue, right: &XPathValue, cmp: F) -> XPathValue
+/// Compare two values as numbers (for relational operators: <, <=, >, >=).
+///
+/// Requires document access to resolve NodeSet values to their text content
+/// before numeric conversion, per XPath 1.0 spec.
+fn compare_numbers<D: DocumentAccess, F>(
+    doc: &D,
+    left: &XPathValue,
+    right: &XPathValue,
+    cmp: F,
+) -> XPathValue
 where
     F: Fn(f64, f64) -> bool,
 {
-    XPathValue::Boolean(cmp(left.to_number(), right.to_number()))
+    let ln = resolve_number(doc, left);
+    let rn = resolve_number(doc, right);
+    XPathValue::Boolean(cmp(ln, rn))
+}
+
+/// Convert an XPath value to a number, using document access for NodeSets.
+///
+/// Per XPath 1.0 spec, the number-value of a node-set is the number-value
+/// of the string-value of the first node in document order.
+fn resolve_number<D: DocumentAccess>(doc: &D, val: &XPathValue) -> f64 {
+    match val {
+        XPathValue::NodeSet(nodes) => {
+            if let Some(&first) = nodes.first() {
+                let s = dom::node_string_value(doc, first);
+                s.trim().parse().unwrap_or(f64::NAN)
+            } else {
+                f64::NAN
+            }
+        }
+        _ => val.to_number(),
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +490,21 @@ mod tests {
         assert!(
             result.to_boolean(),
             "contains() should work with NodeSet first arg"
+        );
+    }
+
+    #[test]
+    fn relational_operator_on_nodeset_resolves_text_content() {
+        let doc = XmlDocument::parse(b"<r><price>42.5</price></r>");
+        let result = evaluate(&doc, "/r/price > 10").unwrap();
+        assert!(
+            result.to_boolean(),
+            "NodeSet with numeric text '42.5' should be > 10"
+        );
+        let result = evaluate(&doc, "/r/price < 100").unwrap();
+        assert!(
+            result.to_boolean(),
+            "NodeSet with numeric text '42.5' should be < 100"
         );
     }
 }
