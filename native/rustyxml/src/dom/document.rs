@@ -526,6 +526,22 @@ impl<'a> DocumentAccess for XmlDocument<'a> {
         }
     }
 
+    fn node_namespace_uri(&self, id: NodeId) -> Option<&str> {
+        let node = self.get_node(id)?;
+        if node.namespace_id == 0 {
+            return None;
+        }
+        self.strings.get_str_with_input(node.namespace_id, self.input)
+    }
+
+    fn node_prefix(&self, id: NodeId) -> Option<&str> {
+        let node = self.get_node(id)?;
+        if node.prefix_id == 0 {
+            return None;
+        }
+        self.strings.get_str_with_input(node.prefix_id, self.input)
+    }
+
     fn text_content(&self, id: NodeId) -> Option<&str> {
         let node = self.get_node(id)?;
         if node.is_text() || node.kind == NodeKind::CData {
