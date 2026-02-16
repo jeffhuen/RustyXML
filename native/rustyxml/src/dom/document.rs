@@ -629,6 +629,7 @@ impl<'a> DocumentAccess for XmlDocument<'a> {
 /// document structure, DTD) without allocating nodes, attributes, or a
 /// string pool. This is the memory-efficient validation path used by
 /// `parse_strict` before building the structural index.
+#[must_use = "validation result should be checked"]
 pub fn validate_strict(input: &[u8]) -> Result<(), String> {
     let mut reader = SliceReader::new_strict(input);
     let mut tag_stack: Vec<Vec<u8>> = vec![];

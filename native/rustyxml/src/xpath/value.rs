@@ -6,6 +6,7 @@ use crate::dom::NodeId;
 
 /// XPath value types
 #[derive(Debug, Clone)]
+#[must_use]
 pub enum XPathValue {
     /// A set of nodes (ordered, no duplicates)
     NodeSet(Vec<NodeId>),

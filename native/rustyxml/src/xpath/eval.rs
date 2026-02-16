@@ -21,6 +21,7 @@ pub struct EvalContext<'a, D: DocumentAccess> {
 }
 
 /// Evaluate an XPath expression against any document type
+#[must_use = "XPath evaluation result should be used"]
 pub fn evaluate<D: DocumentAccess>(doc: &D, xpath: &str) -> Result<XPathValue, String> {
     let compiled = super::compiler::compile(xpath)?;
     let context = EvalContext {
@@ -33,6 +34,7 @@ pub fn evaluate<D: DocumentAccess>(doc: &D, xpath: &str) -> Result<XPathValue, S
 }
 
 /// Evaluate an XPath expression from a specific context node
+#[must_use = "XPath evaluation result should be used"]
 pub fn evaluate_from_node<D: DocumentAccess>(
     doc: &D,
     context_node: NodeId,
@@ -266,8 +268,8 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                 let result = match op {
                     BinaryOp::Or => XPathValue::Boolean(left.to_boolean() || right.to_boolean()),
                     BinaryOp::And => XPathValue::Boolean(left.to_boolean() && right.to_boolean()),
-                    BinaryOp::Eq => compare_values(&left, &right, |a, b| a == b),
-                    BinaryOp::NotEq => compare_values(&left, &right, |a, b| a != b),
+                    BinaryOp::Eq => compare_values(ctx.doc, &left, &right, |a, b| a == b),
+                    BinaryOp::NotEq => compare_values(ctx.doc, &left, &right, |a, b| a != b),
                     BinaryOp::Lt => compare_numbers(&left, &right, |a, b| a < b),
                     BinaryOp::LtEq => compare_numbers(&left, &right, |a, b| a <= b),
                     BinaryOp::Gt => compare_numbers(&left, &right, |a, b| a > b),
@@ -306,18 +308,29 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
     Ok(stack.pop().unwrap_or(XPathValue::empty_nodeset()))
 }
 
-/// Compare two XPath values for equality
-fn compare_values<F>(left: &XPathValue, right: &XPathValue, cmp: F) -> XPathValue
+/// Compare two XPath values for equality per XPath 1.0 spec.
+///
+/// Requires document access to get the string-value of nodes in node-sets.
+/// Previously used `format!("{}", node_id)` which compared raw node IDs
+/// as numbers — both incorrect semantics and wasteful allocations.
+fn compare_values<D: DocumentAccess, F>(
+    doc: &D,
+    left: &XPathValue,
+    right: &XPathValue,
+    cmp: F,
+) -> XPathValue
 where
     F: Fn(&str, &str) -> bool,
 {
+    use crate::dom::node_string_value;
+
     match (left, right) {
         (XPathValue::NodeSet(ln), XPathValue::NodeSet(rn)) => {
             // Two node-sets: true if any pair of string values match
-            for l in ln {
-                for r in rn {
-                    let ls = format!("{}", l);
-                    let rs = format!("{}", r);
+            for &l in ln {
+                let ls = node_string_value(doc, l);
+                for &r in rn {
+                    let rs = node_string_value(doc, r);
                     if cmp(&ls, &rs) {
                         return XPathValue::Boolean(true);
                     }
@@ -326,10 +339,10 @@ where
             XPathValue::Boolean(false)
         }
         (XPathValue::NodeSet(nodes), other) | (other, XPathValue::NodeSet(nodes)) => {
-            // Node-set vs other: convert other to appropriate type and compare
+            // Node-set vs other: compare each node's string-value against the other value
             let other_str = other.to_string_value();
-            for n in nodes {
-                let ns = format!("{}", n);
+            for &n in nodes {
+                let ns = node_string_value(doc, n);
                 if cmp(&ns, &other_str) {
                     return XPathValue::Boolean(true);
                 }

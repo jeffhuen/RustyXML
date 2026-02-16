@@ -173,6 +173,11 @@ impl StreamingParser {
         // Remove processed bytes efficiently using drain (no reallocation needed,
         // just moves remaining bytes to front)
         self.buffer.drain(..boundary);
+
+        // Shrink buffer to avoid retaining excess capacity from large chunks.
+        // Cap at 8KB to match initial capacity, preventing unbounded growth
+        // in long-lived streaming parsers.
+        self.buffer.shrink_to(8192);
     }
 
     /// Process a slice of the buffer up to the given boundary
@@ -382,7 +387,10 @@ impl StreamingParser {
             std::mem::take(&mut self.events)
         } else {
             // Partial take - use drain
-            self.events.drain(..count).collect()
+            let taken: Vec<_> = self.events.drain(..count).collect();
+            // Shrink remaining events vec to release excess capacity
+            self.events.shrink_to(64);
+            taken
         }
     }
 
@@ -393,7 +401,10 @@ impl StreamingParser {
         if count == self.complete_elements.len() {
             std::mem::take(&mut self.complete_elements)
         } else {
-            self.complete_elements.drain(..count).collect()
+            let taken: Vec<_> = self.complete_elements.drain(..count).collect();
+            // Shrink remaining elements vec to release excess capacity
+            self.complete_elements.shrink_to(16);
+            taken
         }
     }
 

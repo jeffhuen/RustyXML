@@ -80,3 +80,41 @@ pub trait DocumentAccess {
         0
     }
 }
+
+/// Get the XPath string-value of a node per XPath 1.0 spec.
+///
+/// - For text/CDATA nodes: returns the text content
+/// - For elements: concatenation of all descendant text nodes
+/// - For other node types: empty string
+pub fn node_string_value<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String {
+    let kind = doc.node_kind_of(node_id);
+
+    match kind {
+        NodeKind::Text | NodeKind::CData => doc.text_content(node_id).unwrap_or("").to_string(),
+        NodeKind::Element => {
+            let mut result = String::new();
+            collect_descendant_text(doc, node_id, &mut result);
+            result
+        }
+        _ => String::new(),
+    }
+}
+
+/// Recursively collect text content from all descendant text nodes.
+fn collect_descendant_text<D: DocumentAccess>(doc: &D, node_id: NodeId, result: &mut String) {
+    for child_id in doc.children_vec(node_id) {
+        let kind = doc.node_kind_of(child_id);
+
+        match kind {
+            NodeKind::Text | NodeKind::CData => {
+                if let Some(text) = doc.text_content(child_id) {
+                    result.push_str(text);
+                }
+            }
+            NodeKind::Element => {
+                collect_descendant_text(doc, child_id, result);
+            }
+            _ => {}
+        }
+    }
+}

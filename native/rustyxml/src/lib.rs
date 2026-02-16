@@ -407,46 +407,10 @@ fn xpath_string_value_doc<'a>(
     }
 }
 
-/// Helper to get text content of a node
+/// Helper to get text content of a node.
+/// Delegates to the shared `dom::node_string_value` implementation.
 fn get_node_text_content<D: dom::DocumentAccess>(doc: &D, node_id: dom::NodeId) -> String {
-    use dom::NodeKind;
-
-    let kind = doc.node_kind_of(node_id);
-
-    match kind {
-        NodeKind::Text | NodeKind::CData => doc.text_content(node_id).unwrap_or("").to_string(),
-        NodeKind::Element => {
-            let mut result = String::new();
-            collect_text_content(doc, node_id, &mut result);
-            result
-        }
-        _ => String::new(),
-    }
-}
-
-/// Recursively collect text content from descendants
-fn collect_text_content<D: dom::DocumentAccess>(
-    doc: &D,
-    node_id: dom::NodeId,
-    result: &mut String,
-) {
-    use dom::NodeKind;
-
-    for child_id in doc.children_vec(node_id) {
-        let kind = doc.node_kind_of(child_id);
-
-        match kind {
-            NodeKind::Text | NodeKind::CData => {
-                if let Some(text) = doc.text_content(child_id) {
-                    result.push_str(text);
-                }
-            }
-            NodeKind::Element => {
-                collect_text_content(doc, child_id, result);
-            }
-            _ => {}
-        }
-    }
+    dom::node_string_value(doc, node_id)
 }
 
 // ============================================================================
@@ -1352,8 +1316,11 @@ fn encode_attrs(buf: &mut BinaryWriter, input: &[u8], span: (usize, usize)) {
 /// Return an empty BEAM binary.
 #[inline]
 fn empty_binary<'a>(env: Env<'a>) -> Term<'a> {
-    let owned = rustler::OwnedBinary::new(0).unwrap();
-    owned.release(env).encode(env)
+    // OwnedBinary::new(0) should never fail, but avoid panicking in a NIF.
+    match rustler::OwnedBinary::new(0) {
+        Some(owned) => owned.release(env).encode(env),
+        None => "".encode(env),
+    }
 }
 
 // ============================================================================

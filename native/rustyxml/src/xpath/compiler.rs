@@ -6,11 +6,13 @@
 use super::parser::{Axis, BinaryOp, Expr, NodeTest, Step};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-/// Global LRU cache for compiled XPath expressions
-/// Using a Mutex for thread-safety across BEAM schedulers
-static XPATH_CACHE: Mutex<Option<LruCache<String, CompiledExpr>>> = Mutex::new(None);
+/// Global LRU cache for compiled XPath expressions.
+/// Using Arc<CompiledExpr> to avoid deep cloning on cache hits —
+/// each hit is now a cheap Arc pointer bump instead of cloning
+/// all Vec<Op>, Strings, and Box<CompiledExpr> recursively.
+static XPATH_CACHE: Mutex<Option<LruCache<String, Arc<CompiledExpr>>>> = Mutex::new(None);
 
 /// Cache capacity - tuned for typical XPath usage patterns
 const CACHE_CAPACITY: usize = 256;
@@ -217,26 +219,30 @@ const CACHE_CAPACITY_NONZERO: NonZeroUsize = match NonZeroUsize::new(CACHE_CAPAC
     None => panic!("CACHE_CAPACITY must be non-zero"),
 };
 
-/// Compile an XPath expression string (with caching)
-pub fn compile(xpath: &str) -> Result<CompiledExpr, String> {
+/// Compile an XPath expression string (with caching).
+///
+/// Returns `Arc<CompiledExpr>` — cache hits are a cheap pointer bump
+/// instead of a deep clone of all operations, strings, and predicates.
+#[must_use = "compiled XPath expression should be used for evaluation"]
+pub fn compile(xpath: &str) -> Result<Arc<CompiledExpr>, String> {
     // Try to get from cache first
     if let Ok(mut guard) = XPATH_CACHE.lock() {
         let cache = guard.get_or_insert_with(|| LruCache::new(CACHE_CAPACITY_NONZERO));
 
         if let Some(compiled) = cache.get(xpath) {
-            return Ok(compiled.clone());
+            return Ok(Arc::clone(compiled));
         }
     }
     // If mutex is poisoned, just skip the cache and compile directly
 
     // Not in cache - parse and compile
     let expr = super::parser::parse(xpath)?;
-    let compiled = CompiledExpr::compile(&expr);
+    let compiled = Arc::new(CompiledExpr::compile(&expr));
 
     // Store in cache (if mutex is available)
     if let Ok(mut guard) = XPATH_CACHE.lock() {
         let cache = guard.get_or_insert_with(|| LruCache::new(CACHE_CAPACITY_NONZERO));
-        cache.put(xpath.to_string(), compiled.clone());
+        cache.put(xpath.to_string(), Arc::clone(&compiled));
     }
 
     Ok(compiled)
