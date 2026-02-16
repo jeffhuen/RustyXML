@@ -17,9 +17,9 @@
 //! - number(), sum(), floor(), ceiling(), round()
 
 use super::value::XPathValue;
-use crate::dom::{self, DocumentAccess, NodeId};
 #[cfg(test)]
 use crate::dom::XmlDocument;
+use crate::dom::{self, DocumentAccess, NodeId};
 
 /// Evaluate a function call
 pub fn call<D: DocumentAccess>(
@@ -157,10 +157,7 @@ fn fn_concat<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathV
     Ok(XPathValue::String(result))
 }
 
-fn fn_starts_with<D: DocumentAccess>(
-    args: Vec<XPathValue>,
-    doc: &D,
-) -> Result<XPathValue, String> {
+fn fn_starts_with<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("starts-with() requires exactly 2 arguments".to_string());
     }
@@ -169,10 +166,7 @@ fn fn_starts_with<D: DocumentAccess>(
     Ok(XPathValue::Boolean(s.starts_with(&prefix)))
 }
 
-fn fn_contains<D: DocumentAccess>(
-    args: Vec<XPathValue>,
-    doc: &D,
-) -> Result<XPathValue, String> {
+fn fn_contains<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("contains() requires exactly 2 arguments".to_string());
     }
@@ -181,10 +175,7 @@ fn fn_contains<D: DocumentAccess>(
     Ok(XPathValue::Boolean(s.contains(&pattern)))
 }
 
-fn fn_substring<D: DocumentAccess>(
-    args: Vec<XPathValue>,
-    doc: &D,
-) -> Result<XPathValue, String> {
+fn fn_substring<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValue, String> {
     if args.len() < 2 || args.len() > 3 {
         return Err("substring() requires 2 or 3 arguments".to_string());
     }
@@ -278,10 +269,7 @@ fn fn_normalize_space<D: DocumentAccess>(
     Ok(XPathValue::String(normalized))
 }
 
-fn fn_translate<D: DocumentAccess>(
-    args: Vec<XPathValue>,
-    doc: &D,
-) -> Result<XPathValue, String> {
+fn fn_translate<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValue, String> {
     if args.len() != 3 {
         return Err("translate() requires exactly 3 arguments".to_string());
     }

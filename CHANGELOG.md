@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-02-16
+
+### Fixed
+
+- **XPath string-value semantics** — NodeSet string-values now resolve to actual
+  text content per XPath 1.0 spec instead of internal placeholder strings;
+  affects all string functions (`contains`, `starts-with`, `substring`, etc.)
+- **XPath relational operators on NodeSets** — `<`, `>`, `<=`, `>=` now resolve
+  NodeSet text content before numeric conversion instead of silently returning
+  NaN
+- **NIF panic safety** — replaced `expect()` calls in XPath parser and lexer
+  with defensive fallbacks to prevent BEAM VM crashes on malformed expressions
+- **Streaming buffer reallocation churn** — `shrink_to()` now uses a 4x
+  hysteresis threshold to avoid grow-shrink-grow cycles on partial drains
+
+### Changed
+
+- **NodeSet equality comparison** — pre-computes right-side string values for
+  O(n+m) instead of O(n*m)
+- Removed dead code: 5 duplicated `XmlDocument` methods, unused `XmlAttribute`
+  re-export, redundant `get_node_text_content` wrapper
+- Resolved all `cargo clippy` warnings
+
 ## [0.2.1] - 2026-02-11
 
 ### Fixed
