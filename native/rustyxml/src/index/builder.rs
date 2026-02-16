@@ -56,6 +56,11 @@ impl<'a> IndexBuilder<'a> {
         // Build children from parent links
         self.index.build_children_from_parents();
 
+        // Release over-allocated capacity from initial estimates.
+        // Estimates are based on input size heuristics and often over-allocate
+        // by 2-3x. This reclaims significant memory for long-lived documents.
+        self.index.shrink_to_fit();
+
         // Debug output for structural index sizing (disabled by default)
         // Enable by setting RUSTYXML_DEBUG_INDEX=1 environment variable
         #[cfg(feature = "memory_tracking")]

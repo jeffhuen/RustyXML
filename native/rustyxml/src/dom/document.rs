@@ -52,24 +52,11 @@ impl<'a> XmlDocument<'a> {
         doc
     }
 
-    /// Parse an XML document in strict mode
-    pub fn parse_strict(input: &'a [u8]) -> Result<Self, String> {
-        let mut doc = XmlDocument {
-            input,
-            nodes: Vec::with_capacity(256),
-            attributes: Vec::with_capacity(128),
-            strings: StringPool::new(),
-            root_element: None,
-        };
-
-        doc.nodes.push(XmlNode::document());
-        doc.build_from_events(true)?;
-        Ok(doc)
-    }
-
     /// Intern a Cow<[u8]> intelligently:
     /// - If Borrowed (points into input): use intern_ref (zero-copy)
     /// - If Owned (entity-decoded): use intern (copies to pool)
+    // Pattern-matches Borrowed vs Owned to choose zero-copy interning (intern_ref) or copying (intern)
+    #[expect(clippy::ptr_arg)]
     #[inline]
     fn intern_cow(&mut self, cow: &Cow<'_, [u8]>) -> u32 {
         match cow {
@@ -432,26 +419,6 @@ impl<'a> XmlDocument<'a> {
         self.strings.get_str_with_input(node.name_id, self.input)
     }
 
-    /// Get node local name (without prefix)
-    pub fn node_local_name(&self, id: NodeId) -> Option<&str> {
-        let name = self.node_name(id)?;
-        if let Some(pos) = name.find(':') {
-            Some(&name[pos + 1..])
-        } else {
-            Some(name)
-        }
-    }
-
-    /// Get text content of a text node
-    pub fn text_content(&self, id: NodeId) -> Option<&str> {
-        let node = self.get_node(id)?;
-        if node.is_text() || node.kind == NodeKind::CData {
-            self.strings.get_str_with_input(node.name_id, self.input)
-        } else {
-            None
-        }
-    }
-
     /// Get attributes for an element
     pub fn attributes(&self, id: NodeId) -> &[XmlAttribute] {
         if let Some(node) = self.get_node(id) {
@@ -461,28 +428,6 @@ impl<'a> XmlDocument<'a> {
         } else {
             &[]
         }
-    }
-
-    /// Get attribute value by name
-    pub fn get_attribute(&self, node_id: NodeId, name: &str) -> Option<&str> {
-        for attr in self.attributes(node_id) {
-            if self.strings.get_str_with_input(attr.name_id, self.input) == Some(name) {
-                return self.strings.get_str_with_input(attr.value_id, self.input);
-            }
-        }
-        None
-    }
-
-    /// Get all attribute names and values for a node
-    pub fn get_attribute_values(&self, node_id: NodeId) -> Vec<(&str, &str)> {
-        self.attributes(node_id)
-            .iter()
-            .filter_map(|attr| {
-                let name = self.strings.get_str_with_input(attr.name_id, self.input)?;
-                let value = self.strings.get_str_with_input(attr.value_id, self.input)?;
-                Some((name, value))
-            })
-            .collect()
     }
 
     /// Iterate over children of a node
@@ -629,6 +574,7 @@ impl<'a> DocumentAccess for XmlDocument<'a> {
 /// document structure, DTD) without allocating nodes, attributes, or a
 /// string pool. This is the memory-efficient validation path used by
 /// `parse_strict` before building the structural index.
+#[must_use = "validation result should be checked"]
 pub fn validate_strict(input: &[u8]) -> Result<(), String> {
     let mut reader = SliceReader::new_strict(input);
     let mut tag_stack: Vec<Vec<u8>> = vec![];

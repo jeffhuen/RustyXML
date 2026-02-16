@@ -9,7 +9,7 @@ use super::parser::BinaryOp;
 use super::value::XPathValue;
 #[cfg(test)]
 use crate::dom::XmlDocument;
-use crate::dom::{DocumentAccess, NodeId};
+use crate::dom::{self, DocumentAccess, NodeId};
 use std::collections::HashSet;
 
 /// Evaluation context - generic over document type
@@ -21,6 +21,7 @@ pub struct EvalContext<'a, D: DocumentAccess> {
 }
 
 /// Evaluate an XPath expression against any document type
+#[must_use = "XPath evaluation result should be used"]
 pub fn evaluate<D: DocumentAccess>(doc: &D, xpath: &str) -> Result<XPathValue, String> {
     let compiled = super::compiler::compile(xpath)?;
     let context = EvalContext {
@@ -33,6 +34,7 @@ pub fn evaluate<D: DocumentAccess>(doc: &D, xpath: &str) -> Result<XPathValue, S
 }
 
 /// Evaluate an XPath expression from a specific context node
+#[must_use = "XPath evaluation result should be used"]
 pub fn evaluate_from_node<D: DocumentAccess>(
     doc: &D,
     context_node: NodeId,
@@ -266,12 +268,12 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
                 let result = match op {
                     BinaryOp::Or => XPathValue::Boolean(left.to_boolean() || right.to_boolean()),
                     BinaryOp::And => XPathValue::Boolean(left.to_boolean() && right.to_boolean()),
-                    BinaryOp::Eq => compare_values(&left, &right, |a, b| a == b),
-                    BinaryOp::NotEq => compare_values(&left, &right, |a, b| a != b),
-                    BinaryOp::Lt => compare_numbers(&left, &right, |a, b| a < b),
-                    BinaryOp::LtEq => compare_numbers(&left, &right, |a, b| a <= b),
-                    BinaryOp::Gt => compare_numbers(&left, &right, |a, b| a > b),
-                    BinaryOp::GtEq => compare_numbers(&left, &right, |a, b| a >= b),
+                    BinaryOp::Eq => compare_values(ctx.doc, &left, &right, |a, b| a == b),
+                    BinaryOp::NotEq => compare_values(ctx.doc, &left, &right, |a, b| a != b),
+                    BinaryOp::Lt => compare_numbers(ctx.doc, &left, &right, |a, b| a < b),
+                    BinaryOp::LtEq => compare_numbers(ctx.doc, &left, &right, |a, b| a <= b),
+                    BinaryOp::Gt => compare_numbers(ctx.doc, &left, &right, |a, b| a > b),
+                    BinaryOp::GtEq => compare_numbers(ctx.doc, &left, &right, |a, b| a >= b),
                     BinaryOp::Add => XPathValue::Number(left.to_number() + right.to_number()),
                     BinaryOp::Sub => XPathValue::Number(left.to_number() - right.to_number()),
                     BinaryOp::Mul => XPathValue::Number(left.to_number() * right.to_number()),
@@ -306,19 +308,33 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
     Ok(stack.pop().unwrap_or(XPathValue::empty_nodeset()))
 }
 
-/// Compare two XPath values for equality
-fn compare_values<F>(left: &XPathValue, right: &XPathValue, cmp: F) -> XPathValue
+/// Compare two XPath values for equality per XPath 1.0 spec.
+///
+/// Only used for `Eq` and `NotEq` operations — relational operators
+/// (`Lt`, `Gt`, etc.) use `compare_numbers` with `f64` comparisons.
+///
+/// Requires document access to get the string-value of nodes in node-sets.
+fn compare_values<D: DocumentAccess, F>(
+    doc: &D,
+    left: &XPathValue,
+    right: &XPathValue,
+    cmp: F,
+) -> XPathValue
 where
     F: Fn(&str, &str) -> bool,
 {
+    use crate::dom::node_string_value;
+
     match (left, right) {
         (XPathValue::NodeSet(ln), XPathValue::NodeSet(rn)) => {
-            // Two node-sets: true if any pair of string values match
-            for l in ln {
-                for r in rn {
-                    let ls = format!("{}", l);
-                    let rs = format!("{}", r);
-                    if cmp(&ls, &rs) {
+            // Two node-sets: true if any pair of string values match.
+            // Pre-compute right-side values to avoid O(n*m) recomputation.
+            let right_strings: Vec<String> =
+                rn.iter().map(|&r| node_string_value(doc, r)).collect();
+            for &l in ln {
+                let ls = node_string_value(doc, l);
+                for rs in &right_strings {
+                    if cmp(&ls, rs) {
                         return XPathValue::Boolean(true);
                     }
                 }
@@ -326,10 +342,10 @@ where
             XPathValue::Boolean(false)
         }
         (XPathValue::NodeSet(nodes), other) | (other, XPathValue::NodeSet(nodes)) => {
-            // Node-set vs other: convert other to appropriate type and compare
+            // Node-set vs other: compare each node's string-value against the other value
             let other_str = other.to_string_value();
-            for n in nodes {
-                let ns = format!("{}", n);
+            for &n in nodes {
+                let ns = node_string_value(doc, n);
                 if cmp(&ns, &other_str) {
                     return XPathValue::Boolean(true);
                 }
@@ -351,12 +367,40 @@ where
     }
 }
 
-/// Compare two values as numbers
-fn compare_numbers<F>(left: &XPathValue, right: &XPathValue, cmp: F) -> XPathValue
+/// Compare two values as numbers (for relational operators: <, <=, >, >=).
+///
+/// Requires document access to resolve NodeSet values to their text content
+/// before numeric conversion, per XPath 1.0 spec.
+fn compare_numbers<D: DocumentAccess, F>(
+    doc: &D,
+    left: &XPathValue,
+    right: &XPathValue,
+    cmp: F,
+) -> XPathValue
 where
     F: Fn(f64, f64) -> bool,
 {
-    XPathValue::Boolean(cmp(left.to_number(), right.to_number()))
+    let ln = resolve_number(doc, left);
+    let rn = resolve_number(doc, right);
+    XPathValue::Boolean(cmp(ln, rn))
+}
+
+/// Convert an XPath value to a number, using document access for NodeSets.
+///
+/// Per XPath 1.0 spec, the number-value of a node-set is the number-value
+/// of the string-value of the first node in document order.
+fn resolve_number<D: DocumentAccess>(doc: &D, val: &XPathValue) -> f64 {
+    match val {
+        XPathValue::NodeSet(nodes) => {
+            if let Some(&first) = nodes.first() {
+                let s = dom::node_string_value(doc, first);
+                s.trim().parse().unwrap_or(f64::NAN)
+            } else {
+                f64::NAN
+            }
+        }
+        _ => val.to_number(),
+    }
 }
 
 #[cfg(test)]
@@ -399,5 +443,68 @@ mod tests {
         let doc = XmlDocument::parse(b"<root>hello</root>");
         let result = evaluate(&doc, "string-length('hello')").unwrap();
         assert_eq!(result.to_number(), 5.0);
+    }
+
+    #[test]
+    fn node_equality_compares_text_content_not_ids() {
+        let doc = XmlDocument::parse(b"<r><a>hello</a><b>hello</b><c>world</c></r>");
+        // Nodes with same text content should be equal
+        let result = evaluate(&doc, "/r/a = /r/b").unwrap();
+        assert!(
+            result.to_boolean(),
+            "Nodes with same text 'hello' should be equal"
+        );
+        // Nodes with different text content should not be equal
+        let result = evaluate(&doc, "/r/a = /r/c").unwrap();
+        assert!(
+            !result.to_boolean(),
+            "Nodes with different text 'hello' vs 'world' should not be equal"
+        );
+    }
+
+    #[test]
+    fn node_inequality_compares_text_content() {
+        let doc = XmlDocument::parse(b"<r><a>hello</a><b>world</b></r>");
+        let result = evaluate(&doc, "/r/a != /r/b").unwrap();
+        assert!(
+            result.to_boolean(),
+            "Nodes with different text should be not-equal"
+        );
+    }
+
+    #[test]
+    fn string_function_on_nodeset_returns_text_content() {
+        let doc = XmlDocument::parse(b"<r><item>content</item></r>");
+        let result = evaluate(&doc, "string(/r/item)").unwrap();
+        assert_eq!(
+            result.to_string_value(),
+            "content",
+            "string() on a node-set should return text content, not node ID"
+        );
+    }
+
+    #[test]
+    fn contains_function_with_nodeset_arg() {
+        let doc = XmlDocument::parse(b"<r><a>hello world</a></r>");
+        let result = evaluate(&doc, "contains(/r/a, 'world')").unwrap();
+        assert!(
+            result.to_boolean(),
+            "contains() should work with NodeSet first arg"
+        );
+    }
+
+    #[test]
+    fn relational_operator_on_nodeset_resolves_text_content() {
+        let doc = XmlDocument::parse(b"<r><price>42.5</price></r>");
+        let result = evaluate(&doc, "/r/price > 10").unwrap();
+        assert!(
+            result.to_boolean(),
+            "NodeSet with numeric text '42.5' should be > 10"
+        );
+        let result = evaluate(&doc, "/r/price < 100").unwrap();
+        assert!(
+            result.to_boolean(),
+            "NodeSet with numeric text '42.5' should be < 100"
+        );
     }
 }

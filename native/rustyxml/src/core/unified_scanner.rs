@@ -630,7 +630,7 @@ mod tests {
 
         // The '<' should be emitted as text, then "1invalid/>" as more text
         assert!(
-            handler.texts.len() >= 1,
+            !handler.texts.is_empty(),
             "Invalid markup should produce text events"
         );
         assert_eq!(
@@ -650,7 +650,7 @@ mod tests {
 
         // Should have text for "<1bad/>" and one valid element
         assert!(
-            handler.texts.len() >= 1,
+            !handler.texts.is_empty(),
             "Invalid markup should produce text"
         );
         assert_eq!(

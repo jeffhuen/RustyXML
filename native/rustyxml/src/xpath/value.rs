@@ -6,6 +6,7 @@ use crate::dom::NodeId;
 
 /// XPath value types
 #[derive(Debug, Clone)]
+#[must_use]
 pub enum XPathValue {
     /// A set of nodes (ordered, no duplicates)
     NodeSet(Vec<NodeId>),
@@ -67,17 +68,20 @@ impl XPathValue {
         }
     }
 
-    /// Convert to string (XPath string() function semantics)
+    /// Convert to string (XPath string() function semantics).
+    ///
+    /// **Warning:** For `NodeSet` values, this returns an empty string because
+    /// proper XPath 1.0 string conversion requires document access to extract
+    /// text content. Use `dom::node_string_value()` directly when you have a
+    /// document reference and need the string-value of a node.
     pub fn to_string_value(&self) -> String {
         match self {
-            XPathValue::NodeSet(nodes) => {
-                // String value of first node in document order
-                // TODO: get actual text content from document
-                if nodes.is_empty() {
-                    String::new()
-                } else {
-                    format!("[node:{}]", nodes[0])
-                }
+            XPathValue::NodeSet(_) => {
+                // XPath 1.0 spec: string-value of a node-set is the string-value
+                // of the first node in document order. We cannot resolve this without
+                // document access, so return empty string. Callers with doc access
+                // should use dom::node_string_value() instead.
+                String::new()
             }
             XPathValue::Boolean(b) => if *b { "true" } else { "false" }.to_string(),
             XPathValue::Number(n) => {

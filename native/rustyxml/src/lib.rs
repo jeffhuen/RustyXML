@@ -234,7 +234,7 @@ fn xpath_text_list<'a>(
         Ok(XPathValue::NodeSet(nodes)) => {
             let mut list = Term::list_new_empty(env);
             for &id in nodes.iter().rev() {
-                let text = get_node_text_content(&view, id);
+                let text = dom::node_string_value(&view, id);
                 let binary = term::bytes_to_binary(env, text.as_bytes());
                 list = list.list_prepend(binary);
             }
@@ -276,7 +276,7 @@ fn parse_and_xpath_text<'a>(
         Ok(XPathValue::NodeSet(nodes)) => {
             let mut list = Term::list_new_empty(env);
             for &id in nodes.iter().rev() {
-                let text = get_node_text_content(&view, id);
+                let text = dom::node_string_value(&view, id);
                 let binary = term::bytes_to_binary(env, text.as_bytes());
                 list = list.list_prepend(binary);
             }
@@ -365,7 +365,7 @@ fn xpath_string_value<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> N
                 xpath::XPathValue::Boolean(b) => b.to_string(),
                 xpath::XPathValue::NodeSet(nodes) => {
                     if let Some(&node_id) = nodes.first() {
-                        get_node_text_content(&view, node_id)
+                        dom::node_string_value(&view, node_id)
                     } else {
                         String::new()
                     }
@@ -394,7 +394,7 @@ fn xpath_string_value_doc<'a>(
                 xpath::XPathValue::Boolean(b) => b.to_string(),
                 xpath::XPathValue::NodeSet(nodes) => {
                     if let Some(&node_id) = nodes.first() {
-                        get_node_text_content(&view, node_id)
+                        dom::node_string_value(&view, node_id)
                     } else {
                         String::new()
                     }
@@ -407,47 +407,6 @@ fn xpath_string_value_doc<'a>(
     }
 }
 
-/// Helper to get text content of a node
-fn get_node_text_content<D: dom::DocumentAccess>(doc: &D, node_id: dom::NodeId) -> String {
-    use dom::NodeKind;
-
-    let kind = doc.node_kind_of(node_id);
-
-    match kind {
-        NodeKind::Text | NodeKind::CData => doc.text_content(node_id).unwrap_or("").to_string(),
-        NodeKind::Element => {
-            let mut result = String::new();
-            collect_text_content(doc, node_id, &mut result);
-            result
-        }
-        _ => String::new(),
-    }
-}
-
-/// Recursively collect text content from descendants
-fn collect_text_content<D: dom::DocumentAccess>(
-    doc: &D,
-    node_id: dom::NodeId,
-    result: &mut String,
-) {
-    use dom::NodeKind;
-
-    for child_id in doc.children_vec(node_id) {
-        let kind = doc.node_kind_of(child_id);
-
-        match kind {
-            NodeKind::Text | NodeKind::CData => {
-                if let Some(text) = doc.text_content(child_id) {
-                    result.push_str(text);
-                }
-            }
-            NodeKind::Element => {
-                collect_text_content(doc, child_id, result);
-            }
-            _ => {}
-        }
-    }
-}
 
 // ============================================================================
 // Streaming Parser
@@ -1352,8 +1311,11 @@ fn encode_attrs(buf: &mut BinaryWriter, input: &[u8], span: (usize, usize)) {
 /// Return an empty BEAM binary.
 #[inline]
 fn empty_binary<'a>(env: Env<'a>) -> Term<'a> {
-    let owned = rustler::OwnedBinary::new(0).unwrap();
-    owned.release(env).encode(env)
+    // OwnedBinary::new(0) should never fail, but avoid panicking in a NIF.
+    match rustler::OwnedBinary::new(0) {
+        Some(owned) => owned.release(env).encode(env),
+        None => "".encode(env),
+    }
 }
 
 // ============================================================================

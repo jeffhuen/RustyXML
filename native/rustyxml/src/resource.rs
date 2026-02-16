@@ -275,8 +275,11 @@ pub struct DocumentAccumulator {
 
 impl DocumentAccumulator {
     pub fn new() -> Self {
+        // Start with 4KB — enough for small documents, grows as needed.
+        // Previously 64KB which wasted memory for small documents and
+        // multiplied quickly across concurrent accumulators.
         Self {
-            buffer: Mutex::new(Vec::with_capacity(64 * 1024)),
+            buffer: Mutex::new(Vec::with_capacity(4096)),
         }
     }
 
