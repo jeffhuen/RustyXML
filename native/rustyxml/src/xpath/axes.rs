@@ -231,17 +231,15 @@ pub fn matches_node_test<D: DocumentAccess>(
             if kind != NodeKind::Element {
                 return false;
             }
-            // TODO: check namespace
-            let _ = ns;
-            doc.node_local_name(node_id) == Some(local.as_str())
+            let local_matches = doc.node_local_name(node_id) == Some(local.as_str());
+            let ns_matches = doc.node_namespace_uri(node_id) == Some(ns.as_str());
+            local_matches && ns_matches
         }
         CompiledNodeTest::NamespaceWildcard(ns) => {
             if kind != NodeKind::Element {
                 return false;
             }
-            // TODO: check namespace prefix matches
-            let _ = ns;
-            true
+            doc.node_namespace_uri(node_id) == Some(ns.as_str())
         }
         CompiledNodeTest::Node => {
             // node() matches any node type
@@ -304,5 +302,59 @@ mod tests {
         let root = doc.root_element_id().unwrap();
         let result = namespace_axis(&doc, root);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_qname_matches_namespace_and_local() {
+        let doc = XmlDocument::parse(
+            b"<root xmlns:ns=\"http://example.com\"><ns:item/><other/></root>",
+        );
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let ns_item = children[0];
+        let other = children[1];
+
+        use crate::xpath::compiler::CompiledNodeTest;
+
+        // ns:item should match QName("http://example.com", "item")
+        assert!(matches_node_test(
+            &doc,
+            ns_item,
+            &CompiledNodeTest::QName("http://example.com".to_string(), "item".to_string()),
+        ));
+
+        // other should NOT match QName("http://example.com", "other")
+        assert!(!matches_node_test(
+            &doc,
+            other,
+            &CompiledNodeTest::QName("http://example.com".to_string(), "other".to_string()),
+        ));
+    }
+
+    #[test]
+    fn test_namespace_wildcard_matches_only_correct_namespace() {
+        let doc = XmlDocument::parse(
+            b"<root xmlns:ns=\"http://example.com\"><ns:a/><other/></root>",
+        );
+        let root = doc.root_element_id().unwrap();
+        let children: Vec<_> = doc.children_vec(root);
+        let ns_a = children[0];
+        let other = children[1];
+
+        use crate::xpath::compiler::CompiledNodeTest;
+
+        // ns:a should match NamespaceWildcard("http://example.com")
+        assert!(matches_node_test(
+            &doc,
+            ns_a,
+            &CompiledNodeTest::NamespaceWildcard("http://example.com".to_string()),
+        ));
+
+        // other should NOT match NamespaceWildcard("http://example.com")
+        assert!(!matches_node_test(
+            &doc,
+            other,
+            &CompiledNodeTest::NamespaceWildcard("http://example.com".to_string()),
+        ));
     }
 }
