@@ -143,11 +143,6 @@ impl<'a> DocumentAccess for IndexedDocumentView<'a> {
         None
     }
 
-    fn node_prefix(&self, _id: NodeId) -> Option<&str> {
-        // Prefix resolution deferred for indexed documents
-        None
-    }
-
     fn text_content(&self, id: NodeId) -> Option<&str> {
         let (is_text, idx) = decode_node_id(id);
         if is_text {

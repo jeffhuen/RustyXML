@@ -531,15 +531,8 @@ impl<'a> DocumentAccess for XmlDocument<'a> {
         if node.namespace_id == 0 {
             return None;
         }
-        self.strings.get_str_with_input(node.namespace_id, self.input)
-    }
-
-    fn node_prefix(&self, id: NodeId) -> Option<&str> {
-        let node = self.get_node(id)?;
-        if node.prefix_id == 0 {
-            return None;
-        }
-        self.strings.get_str_with_input(node.prefix_id, self.input)
+        self.strings
+            .get_str_with_input(node.namespace_id, self.input)
     }
 
     fn text_content(&self, id: NodeId) -> Option<&str> {

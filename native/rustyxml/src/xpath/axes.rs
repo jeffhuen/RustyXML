@@ -296,9 +296,7 @@ mod tests {
     fn test_namespace_axis_returns_empty() {
         // The namespace axis requires namespace node types not in our node model.
         // Returns empty — use namespace-uri() for namespace information.
-        let doc = XmlDocument::parse(
-            b"<root xmlns:ns=\"http://example.com\"><ns:child/></root>",
-        );
+        let doc = XmlDocument::parse(b"<root xmlns:ns=\"http://example.com\"><ns:child/></root>");
         let root = doc.root_element_id().unwrap();
         let result = namespace_axis(&doc, root);
         assert!(result.is_empty());
@@ -306,9 +304,8 @@ mod tests {
 
     #[test]
     fn test_qname_matches_namespace_and_local() {
-        let doc = XmlDocument::parse(
-            b"<root xmlns:ns=\"http://example.com\"><ns:item/><other/></root>",
-        );
+        let doc =
+            XmlDocument::parse(b"<root xmlns:ns=\"http://example.com\"><ns:item/><other/></root>");
         let root = doc.root_element_id().unwrap();
         let children: Vec<_> = doc.children_vec(root);
         let ns_item = children[0];
@@ -333,9 +330,8 @@ mod tests {
 
     #[test]
     fn test_namespace_wildcard_matches_only_correct_namespace() {
-        let doc = XmlDocument::parse(
-            b"<root xmlns:ns=\"http://example.com\"><ns:a/><other/></root>",
-        );
+        let doc =
+            XmlDocument::parse(b"<root xmlns:ns=\"http://example.com\"><ns:a/><other/></root>");
         let root = doc.root_element_id().unwrap();
         let children: Vec<_> = doc.children_vec(root);
         let ns_a = children[0];

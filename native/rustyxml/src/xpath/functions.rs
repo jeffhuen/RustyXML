@@ -140,7 +140,10 @@ fn fn_name<D: DocumentAccess>(
 }
 
 fn fn_id(_args: Vec<XPathValue>) -> Result<XPathValue, String> {
-    Err("id() is not supported: DTD processing is disabled for security (XXE prevention)".to_string())
+    Err(
+        "id() is not supported: DTD processing is disabled for security (XXE prevention)"
+            .to_string(),
+    )
 }
 
 // String Functions
@@ -317,7 +320,11 @@ fn fn_not(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::Boolean(!args[0].to_boolean()))
 }
 
-fn fn_lang<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D, context: NodeId) -> Result<XPathValue, String> {
+fn fn_lang<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+    context: NodeId,
+) -> Result<XPathValue, String> {
     if args.len() != 1 {
         return Err("lang() requires exactly 1 argument".to_string());
     }
@@ -490,8 +497,19 @@ mod tests {
         let root = doc.root_element_id().unwrap();
         let children: Vec<_> = doc.children_vec(root);
         let child = children[0];
-        let result = call("lang", vec![XPathValue::String("en".to_string())], &doc, child, 1, 1).unwrap();
-        assert!(result.to_boolean(), "lang('en') should match xml:lang='en' on ancestor");
+        let result = call(
+            "lang",
+            vec![XPathValue::String("en".to_string())],
+            &doc,
+            child,
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(
+            result.to_boolean(),
+            "lang('en') should match xml:lang='en' on ancestor"
+        );
     }
 
     #[test]
@@ -500,8 +518,19 @@ mod tests {
         let root = doc.root_element_id().unwrap();
         let children: Vec<_> = doc.children_vec(root);
         let child = children[0];
-        let result = call("lang", vec![XPathValue::String("en".to_string())], &doc, child, 1, 1).unwrap();
-        assert!(result.to_boolean(), "lang('en') should match xml:lang='en-US'");
+        let result = call(
+            "lang",
+            vec![XPathValue::String("en".to_string())],
+            &doc,
+            child,
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(
+            result.to_boolean(),
+            "lang('en') should match xml:lang='en-US'"
+        );
     }
 
     #[test]
