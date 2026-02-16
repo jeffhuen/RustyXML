@@ -7,27 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-16
+
+### Added
+
+- `namespace-uri()` and `lang()` XPath functions
+- Namespace-aware node test matching for prefixed element queries
+
+### Changed
+
+- `id()` and `$variable` now return explicit errors instead of silent empty results
+
 ## [0.2.2] - 2026-02-16
 
 ### Fixed
 
-- **XPath string-value semantics** — NodeSet string-values now resolve to actual
-  text content per XPath 1.0 spec instead of internal placeholder strings;
-  affects all string functions (`contains`, `starts-with`, `substring`, etc.)
-- **XPath relational operators on NodeSets** — `<`, `>`, `<=`, `>=` now resolve
-  NodeSet text content before numeric conversion instead of silently returning
-  NaN
-- **NIF panic safety** — replaced `expect()` calls in XPath parser and lexer
-  with defensive fallbacks to prevent BEAM VM crashes on malformed expressions
-- **Streaming buffer reallocation churn** — `shrink_to()` now uses a 4x
-  hysteresis threshold to avoid grow-shrink-grow cycles on partial drains
+- XPath string functions (`contains`, `starts-with`, etc.) now work correctly on node-sets
+- XPath comparisons (`<`, `>`, `<=`, `>=`) on node-sets no longer return NaN
+- Malformed XPath expressions no longer crash the BEAM VM
+- Reduced streaming buffer reallocation churn
 
 ### Changed
 
-- **NodeSet equality comparison** — pre-computes right-side string values for
-  O(n+m) instead of O(n*m)
-- Removed dead code: 5 duplicated `XmlDocument` methods, unused `XmlAttribute`
-  re-export, redundant `get_node_text_content` wrapper
+- Faster node-set equality comparison
+- Removed dead code
 - Resolved all `cargo clippy` warnings
 
 ## [0.2.1] - 2026-02-11
