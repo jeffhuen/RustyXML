@@ -17,9 +17,9 @@
 //! - number(), sum(), floor(), ceiling(), round()
 
 use super::value::XPathValue;
+use crate::dom::{self, DocumentAccess, NodeId};
 #[cfg(test)]
 use crate::dom::XmlDocument;
-use crate::dom::{DocumentAccess, NodeId};
 
 /// Evaluate a function call
 pub fn call<D: DocumentAccess>(
@@ -42,15 +42,15 @@ pub fn call<D: DocumentAccess>(
 
         // String Functions
         "string" => fn_string(args, doc, context),
-        "concat" => fn_concat(args),
-        "starts-with" => fn_starts_with(args),
-        "contains" => fn_contains(args),
-        "substring" => fn_substring(args),
-        "substring-before" => fn_substring_before(args),
-        "substring-after" => fn_substring_after(args),
-        "string-length" => fn_string_length(args),
+        "concat" => fn_concat(args, doc),
+        "starts-with" => fn_starts_with(args, doc),
+        "contains" => fn_contains(args, doc),
+        "substring" => fn_substring(args, doc),
+        "substring-before" => fn_substring_before(args, doc),
+        "substring-after" => fn_substring_after(args, doc),
+        "string-length" => fn_string_length(args, doc, context),
         "normalize-space" => fn_normalize_space(args, doc, context),
-        "translate" => fn_translate(args),
+        "translate" => fn_translate(args, doc),
 
         // Boolean Functions
         "boolean" => fn_boolean(args),
@@ -142,46 +142,54 @@ fn fn_string<D: DocumentAccess>(
     context: NodeId,
 ) -> Result<XPathValue, String> {
     let value = if args.is_empty() {
-        // String value of context node
-        get_string_value(doc, context)
+        dom::node_string_value(doc, context)
     } else {
-        args[0].to_string_value()
+        resolve_string(&args[0], doc)
     };
     Ok(XPathValue::String(value))
 }
 
-fn fn_concat(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_concat<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValue, String> {
     if args.len() < 2 {
         return Err("concat() requires at least 2 arguments".to_string());
     }
-    let result: String = args.iter().map(|a| a.to_string_value()).collect();
+    let result: String = args.iter().map(|a| resolve_string(a, doc)).collect();
     Ok(XPathValue::String(result))
 }
 
-fn fn_starts_with(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_starts_with<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("starts-with() requires exactly 2 arguments".to_string());
     }
-    let s = args[0].to_string_value();
-    let prefix = args[1].to_string_value();
+    let s = resolve_string(&args[0], doc);
+    let prefix = resolve_string(&args[1], doc);
     Ok(XPathValue::Boolean(s.starts_with(&prefix)))
 }
 
-fn fn_contains(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_contains<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("contains() requires exactly 2 arguments".to_string());
     }
-    let s = args[0].to_string_value();
-    let pattern = args[1].to_string_value();
+    let s = resolve_string(&args[0], doc);
+    let pattern = resolve_string(&args[1], doc);
     Ok(XPathValue::Boolean(s.contains(&pattern)))
 }
 
-fn fn_substring(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_substring<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() < 2 || args.len() > 3 {
         return Err("substring() requires 2 or 3 arguments".to_string());
     }
 
-    let s = args[0].to_string_value();
+    let s = resolve_string(&args[0], doc);
     let start = args[1].to_number().round() as i64 - 1; // XPath is 1-indexed
     let start = start.max(0) as usize;
 
@@ -198,12 +206,15 @@ fn fn_substring(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::String(result))
 }
 
-fn fn_substring_before(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_substring_before<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("substring-before() requires exactly 2 arguments".to_string());
     }
-    let s = args[0].to_string_value();
-    let pattern = args[1].to_string_value();
+    let s = resolve_string(&args[0], doc);
+    let pattern = resolve_string(&args[1], doc);
 
     let result = if let Some(pos) = s.find(&pattern) {
         s[..pos].to_string()
@@ -214,12 +225,15 @@ fn fn_substring_before(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::String(result))
 }
 
-fn fn_substring_after(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_substring_after<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() != 2 {
         return Err("substring-after() requires exactly 2 arguments".to_string());
     }
-    let s = args[0].to_string_value();
-    let pattern = args[1].to_string_value();
+    let s = resolve_string(&args[0], doc);
+    let pattern = resolve_string(&args[1], doc);
 
     let result = if let Some(pos) = s.find(&pattern) {
         s[pos + pattern.len()..].to_string()
@@ -230,14 +244,18 @@ fn fn_substring_after(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::String(result))
 }
 
-fn fn_string_length(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_string_length<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+    context: NodeId,
+) -> Result<XPathValue, String> {
     if args.len() > 1 {
         return Err("string-length() requires 0 or 1 arguments".to_string());
     }
     let s = if args.is_empty() {
-        String::new() // TODO: should be string value of context
+        dom::node_string_value(doc, context)
     } else {
-        args[0].to_string_value()
+        resolve_string(&args[0], doc)
     };
     Ok(XPathValue::Number(s.chars().count() as f64))
 }
@@ -248,9 +266,9 @@ fn fn_normalize_space<D: DocumentAccess>(
     context: NodeId,
 ) -> Result<XPathValue, String> {
     let s = if args.is_empty() {
-        get_string_value(doc, context)
+        dom::node_string_value(doc, context)
     } else if args.len() == 1 {
-        args[0].to_string_value()
+        resolve_string(&args[0], doc)
     } else {
         return Err("normalize-space() requires 0 or 1 arguments".to_string());
     };
@@ -260,14 +278,17 @@ fn fn_normalize_space<D: DocumentAccess>(
     Ok(XPathValue::String(normalized))
 }
 
-fn fn_translate(args: Vec<XPathValue>) -> Result<XPathValue, String> {
+fn fn_translate<D: DocumentAccess>(
+    args: Vec<XPathValue>,
+    doc: &D,
+) -> Result<XPathValue, String> {
     if args.len() != 3 {
         return Err("translate() requires exactly 3 arguments".to_string());
     }
 
-    let s = args[0].to_string_value();
-    let from: Vec<char> = args[1].to_string_value().chars().collect();
-    let to: Vec<char> = args[2].to_string_value().chars().collect();
+    let s = resolve_string(&args[0], doc);
+    let from: Vec<char> = resolve_string(&args[1], doc).chars().collect();
+    let to: Vec<char> = resolve_string(&args[2], doc).chars().collect();
 
     let result: String = s
         .chars()
@@ -312,7 +333,7 @@ fn fn_number<D: DocumentAccess>(
     context: NodeId,
 ) -> Result<XPathValue, String> {
     let value = if args.is_empty() {
-        let s = get_string_value(doc, context);
+        let s = dom::node_string_value(doc, context);
         s.trim().parse().unwrap_or(f64::NAN)
     } else if args.len() == 1 {
         args[0].to_number()
@@ -331,7 +352,7 @@ fn fn_sum<D: DocumentAccess>(args: Vec<XPathValue>, doc: &D) -> Result<XPathValu
         XPathValue::NodeSet(nodes) => {
             let mut total = 0.0;
             for &node in nodes {
-                let s = get_string_value(doc, node);
+                let s = dom::node_string_value(doc, node);
                 if let Ok(n) = s.trim().parse::<f64>() {
                     total += n;
                 } else {
@@ -372,26 +393,21 @@ fn fn_round(args: Vec<XPathValue>) -> Result<XPathValue, String> {
     Ok(XPathValue::Number(rounded))
 }
 
-/// Get the string value of a node
-fn get_string_value<D: DocumentAccess>(doc: &D, node_id: NodeId) -> String {
-    // For text nodes, return the text content
-    if let Some(text) = doc.text_content(node_id) {
-        return text.to_string();
-    }
-
-    // For element nodes, concatenate all descendant text
-    let mut result = String::new();
-    collect_text(doc, node_id, &mut result);
-    result
-}
-
-fn collect_text<D: DocumentAccess>(doc: &D, node_id: NodeId, result: &mut String) {
-    if let Some(text) = doc.text_content(node_id) {
-        result.push_str(text);
-    }
-
-    for child in doc.children_vec(node_id) {
-        collect_text(doc, child, result);
+/// Convert an XPath value to a string, using document access for NodeSets.
+///
+/// Per XPath 1.0 spec, the string-value of a node-set is the string-value
+/// of the first node in document order. This requires document access to
+/// extract actual text content (unlike `XPathValue::to_string_value()`).
+fn resolve_string<D: DocumentAccess>(val: &XPathValue, doc: &D) -> String {
+    match val {
+        XPathValue::NodeSet(nodes) => {
+            if let Some(&first) = nodes.first() {
+                dom::node_string_value(doc, first)
+            } else {
+                String::new()
+            }
+        }
+        _ => val.to_string_value(),
     }
 }
 
@@ -401,32 +417,35 @@ mod tests {
 
     #[test]
     fn test_concat() {
+        let doc = XmlDocument::parse(b"<r/>");
         let args = vec![
             XPathValue::String("hello".to_string()),
             XPathValue::String(" ".to_string()),
             XPathValue::String("world".to_string()),
         ];
-        let result = fn_concat(args).unwrap();
+        let result = fn_concat(args, &doc).unwrap();
         assert_eq!(result.to_string_value(), "hello world");
     }
 
     #[test]
     fn test_contains() {
+        let doc = XmlDocument::parse(b"<r/>");
         let args = vec![
             XPathValue::String("hello world".to_string()),
             XPathValue::String("world".to_string()),
         ];
-        assert!(fn_contains(args).unwrap().to_boolean());
+        assert!(fn_contains(args, &doc).unwrap().to_boolean());
     }
 
     #[test]
     fn test_substring() {
+        let doc = XmlDocument::parse(b"<r/>");
         let args = vec![
             XPathValue::String("hello".to_string()),
             XPathValue::Number(2.0),
             XPathValue::Number(3.0),
         ];
-        let result = fn_substring(args).unwrap();
+        let result = fn_substring(args, &doc).unwrap();
         assert_eq!(result.to_string_value(), "ell");
     }
 

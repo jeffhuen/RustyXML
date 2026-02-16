@@ -234,7 +234,7 @@ fn xpath_text_list<'a>(
         Ok(XPathValue::NodeSet(nodes)) => {
             let mut list = Term::list_new_empty(env);
             for &id in nodes.iter().rev() {
-                let text = get_node_text_content(&view, id);
+                let text = dom::node_string_value(&view, id);
                 let binary = term::bytes_to_binary(env, text.as_bytes());
                 list = list.list_prepend(binary);
             }
@@ -276,7 +276,7 @@ fn parse_and_xpath_text<'a>(
         Ok(XPathValue::NodeSet(nodes)) => {
             let mut list = Term::list_new_empty(env);
             for &id in nodes.iter().rev() {
-                let text = get_node_text_content(&view, id);
+                let text = dom::node_string_value(&view, id);
                 let binary = term::bytes_to_binary(env, text.as_bytes());
                 list = list.list_prepend(binary);
             }
@@ -365,7 +365,7 @@ fn xpath_string_value<'a>(env: Env<'a>, input: Binary<'a>, xpath_str: &str) -> N
                 xpath::XPathValue::Boolean(b) => b.to_string(),
                 xpath::XPathValue::NodeSet(nodes) => {
                     if let Some(&node_id) = nodes.first() {
-                        get_node_text_content(&view, node_id)
+                        dom::node_string_value(&view, node_id)
                     } else {
                         String::new()
                     }
@@ -394,7 +394,7 @@ fn xpath_string_value_doc<'a>(
                 xpath::XPathValue::Boolean(b) => b.to_string(),
                 xpath::XPathValue::NodeSet(nodes) => {
                     if let Some(&node_id) = nodes.first() {
-                        get_node_text_content(&view, node_id)
+                        dom::node_string_value(&view, node_id)
                     } else {
                         String::new()
                     }
@@ -407,11 +407,6 @@ fn xpath_string_value_doc<'a>(
     }
 }
 
-/// Helper to get text content of a node.
-/// Delegates to the shared `dom::node_string_value` implementation.
-fn get_node_text_content<D: dom::DocumentAccess>(doc: &D, node_id: dom::NodeId) -> String {
-    dom::node_string_value(doc, node_id)
-}
 
 // ============================================================================
 // Streaming Parser

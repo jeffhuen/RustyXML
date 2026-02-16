@@ -12,8 +12,6 @@ pub mod node;
 pub mod strings;
 
 pub use document::validate_strict;
-#[cfg(test)]
-pub use node::XmlAttribute;
 pub use node::{NodeId, NodeKind, XmlNode};
 
 #[cfg(test)]

@@ -310,9 +310,10 @@ pub fn evaluate_compiled<'a, D: DocumentAccess>(
 
 /// Compare two XPath values for equality per XPath 1.0 spec.
 ///
+/// Only used for `Eq` and `NotEq` operations — relational operators
+/// (`Lt`, `Gt`, etc.) use `compare_numbers` with `f64` comparisons.
+///
 /// Requires document access to get the string-value of nodes in node-sets.
-/// Previously used `format!("{}", node_id)` which compared raw node IDs
-/// as numbers — both incorrect semantics and wasteful allocations.
 fn compare_values<D: DocumentAccess, F>(
     doc: &D,
     left: &XPathValue,
@@ -326,12 +327,14 @@ where
 
     match (left, right) {
         (XPathValue::NodeSet(ln), XPathValue::NodeSet(rn)) => {
-            // Two node-sets: true if any pair of string values match
+            // Two node-sets: true if any pair of string values match.
+            // Pre-compute right-side values to avoid O(n*m) recomputation.
+            let right_strings: Vec<String> =
+                rn.iter().map(|&r| node_string_value(doc, r)).collect();
             for &l in ln {
                 let ls = node_string_value(doc, l);
-                for &r in rn {
-                    let rs = node_string_value(doc, r);
-                    if cmp(&ls, &rs) {
+                for rs in &right_strings {
+                    if cmp(&ls, rs) {
                         return XPathValue::Boolean(true);
                     }
                 }
@@ -412,5 +415,53 @@ mod tests {
         let doc = XmlDocument::parse(b"<root>hello</root>");
         let result = evaluate(&doc, "string-length('hello')").unwrap();
         assert_eq!(result.to_number(), 5.0);
+    }
+
+    #[test]
+    fn node_equality_compares_text_content_not_ids() {
+        let doc = XmlDocument::parse(b"<r><a>hello</a><b>hello</b><c>world</c></r>");
+        // Nodes with same text content should be equal
+        let result = evaluate(&doc, "/r/a = /r/b").unwrap();
+        assert!(
+            result.to_boolean(),
+            "Nodes with same text 'hello' should be equal"
+        );
+        // Nodes with different text content should not be equal
+        let result = evaluate(&doc, "/r/a = /r/c").unwrap();
+        assert!(
+            !result.to_boolean(),
+            "Nodes with different text 'hello' vs 'world' should not be equal"
+        );
+    }
+
+    #[test]
+    fn node_inequality_compares_text_content() {
+        let doc = XmlDocument::parse(b"<r><a>hello</a><b>world</b></r>");
+        let result = evaluate(&doc, "/r/a != /r/b").unwrap();
+        assert!(
+            result.to_boolean(),
+            "Nodes with different text should be not-equal"
+        );
+    }
+
+    #[test]
+    fn string_function_on_nodeset_returns_text_content() {
+        let doc = XmlDocument::parse(b"<r><item>content</item></r>");
+        let result = evaluate(&doc, "string(/r/item)").unwrap();
+        assert_eq!(
+            result.to_string_value(),
+            "content",
+            "string() on a node-set should return text content, not node ID"
+        );
+    }
+
+    #[test]
+    fn contains_function_with_nodeset_arg() {
+        let doc = XmlDocument::parse(b"<r><a>hello world</a></r>");
+        let result = evaluate(&doc, "contains(/r/a, 'world')").unwrap();
+        assert!(
+            result.to_boolean(),
+            "contains() should work with NodeSet first arg"
+        );
     }
 }

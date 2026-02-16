@@ -223,7 +223,6 @@ const CACHE_CAPACITY_NONZERO: NonZeroUsize = match NonZeroUsize::new(CACHE_CAPAC
 ///
 /// Returns `Arc<CompiledExpr>` — cache hits are a cheap pointer bump
 /// instead of a deep clone of all operations, strings, and predicates.
-#[must_use = "compiled XPath expression should be used for evaluation"]
 pub fn compile(xpath: &str) -> Result<Arc<CompiledExpr>, String> {
     // Try to get from cache first
     if let Ok(mut guard) = XPATH_CACHE.lock() {
